@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import type { BreastSide, FeedSubstance } from '../lib/types';
+import type { FeedSubstance } from '../lib/types';
 import NotebookImport from './NotebookImport';
 
 /** 3am-friendly logging: the common actions are ≤2 taps; every module can
@@ -22,16 +22,12 @@ export default function QuickAdd({ childId }: { childId: string }) {
         </div>
       )}
       <Bottle insert={insert} />
-      <Direct insert={insert} />
-      <PumpForm insert={insert} />
-      <DiaperForm insert={insert} />
       <SleepForm insert={insert} />
+      <Caregivers childId={childId} />
+      <DiaperForm insert={insert} />
       <GrowthForm insert={insert} />
+      <PumpForm insert={insert} />
       <NotebookImport childId={childId} />
-      <p className="pb-2 text-center text-xs text-slate-400">
-        Direct-breast volume is a modeled per-feed estimate (age-ramped) — just
-        log the session; minutes don't change the estimate.
-      </p>
     </div>
   );
 }
@@ -110,8 +106,8 @@ function tsFrom(when: string | null, offsetMs = 0): string {
 }
 
 function Bottle({ insert }: { insert: Insert }) {
-  const [substance, setSubstance] = useState<FeedSubstance>('breast_milk');
-  const [when, setWhen] = useState<string | null>(null);
+  const [substance, setSubstance] = useState<FeedSubstance>('formula');
+  const [when, setWhen] = useState<string | null>(nowLocal());
   const color = substance === 'formula' ? '#E8973A' : '#2E86AB';
   const log = (ml: number) =>
     insert('feeds', {
@@ -120,14 +116,14 @@ function Bottle({ insert }: { insert: Insert }) {
   return (
     <Card title="🍼 Bottle" color={color}>
       <div className="mb-3 flex gap-2">
-        <Chip color="#2E86AB" active={substance === 'breast_milk'}
-          onClick={() => setSubstance('breast_milk')}>Breast milk</Chip>
         <Chip color="#E8973A" active={substance === 'formula'}
           onClick={() => setSubstance('formula')}>Formula</Chip>
+        <Chip color="#2E86AB" active={substance === 'breast_milk'}
+          onClick={() => setSubstance('breast_milk')}>Breast milk</Chip>
       </div>
       <WhenPicker value={when} onChange={setWhen} />
       <div className="flex flex-wrap gap-2">
-        {[30, 40, 50, 60, 80].map((ml) => (
+        {[120, 150, 180, 210, 240].map((ml) => (
           <Chip key={ml} color={color} onClick={() => log(ml)}>{ml} mL</Chip>
         ))}
         <CustomNumber unit="mL" onSubmit={log} />
@@ -136,144 +132,31 @@ function Bottle({ insert }: { insert: Insert }) {
   );
 }
 
-// ---- nursing timer (per-side, pause, switch) ------------
-interface NurseSeg { side: 'L' | 'R'; start: number; end: number | null }
-const NURSE_KEY = 'babytracker.nurse.timer';
+/** List of everyone with logging access to this baby (co-parents / caregivers). */
+function Caregivers({ childId }: { childId: string }) {
+  const [emails, setEmails] = useState<string[] | null>(null);
 
-function loadNurseSegs(): NurseSeg[] {
-  try {
-    return JSON.parse(localStorage.getItem(NURSE_KEY) ?? '[]') as NurseSeg[];
-  } catch {
-    return [];
-  }
-}
-
-const mmss = (ms: number) => {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-};
-
-function Direct({ insert }: { insert: Insert }) {
-  const [segs, setSegs] = useState<NurseSeg[]>(loadNurseSegs);
-  const [, setTick] = useState(0);
-  const running = segs.find((s) => s.end === null);
-
-  // survive tab switches / phone lock / accidental reloads (per device)
   useEffect(() => {
-    localStorage.setItem(NURSE_KEY, JSON.stringify(segs));
-  }, [segs]);
-  useEffect(() => {
-    if (!running) return;
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [running]);
-
-  const elapsed = (side: 'L' | 'R') =>
-    segs.filter((s) => s.side === side)
-      .reduce((ms, s) => ms + (s.end ?? Date.now()) - s.start, 0);
-  const total = elapsed('L') + elapsed('R');
-
-  function tap(side: 'L' | 'R') {
-    setSegs((prev) => {
-      const open = prev.find((s) => s.end === null);
-      const closed = prev.map((s) => (s.end === null ? { ...s, end: Date.now() } : s));
-      return open?.side === side
-        ? closed // tapped the running side → pause
-        : [...closed, { side, start: Date.now(), end: null }]; // start / switch
+    let cancelled = false;
+    supabase!.rpc('list_caregivers', { child: childId }).then(({ data, error }) => {
+      if (cancelled) return;
+      setEmails(error ? [] : ((data ?? []) as { email: string }[]).map((r) => r.email));
     });
-  }
-
-  function saveTimer() {
-    if (total < 1000 || segs.length === 0) return;
-    const min = Math.max(1, Math.round(total / 60000));
-    const l = elapsed('L') > 0;
-    const r = elapsed('R') > 0;
-    insert('feeds', {
-      ts: new Date(Math.min(...segs.map((s) => s.start))).toISOString(),
-      delivery: 'breast', substance: 'breast_milk', duration_min: min,
-      side: l && r ? 'both' : l ? 'L' : 'R',
-    }, `${min} min at breast`);
-    setSegs([]);
-  }
-
-  const sideBtn = (side: 'L' | 'R', label: string) => {
-    const active = running?.side === side;
-    return (
-      <button
-        onClick={() => tap(side)}
-        className="flex-1 rounded-2xl border p-4 text-center"
-        style={active
-          ? { background: '#C75B7A', borderColor: '#C75B7A', color: '#fff' }
-          : { borderColor: '#e2e8f0', color: '#475569' }}
-      >
-        <span className="block text-sm font-bold">{active ? `⏸ ${label}` : `▶ ${label}`}</span>
-        <span className="block text-xl font-bold tabular-nums">{mmss(elapsed(side))}</span>
-      </button>
-    );
-  };
+    return () => { cancelled = true; };
+  }, [childId]);
 
   return (
-    <Card title="🤱 Direct breastfeed" color="#C75B7A">
-      <div className="flex gap-2">
-        {sideBtn('L', 'Left')}
-        {sideBtn('R', 'Right')}
-      </div>
-      {segs.length > 0 && (
-        <div className="mt-3 flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-600">
-            {running ? '● nursing' : '⏸ paused'} · {mmss(total)}
-          </span>
-          <Chip onClick={saveTimer}>Save feed</Chip>
-          <button className="text-sm text-slate-400 underline"
-            onClick={() => confirm('Discard this timer?') && setSegs([])}>
-            discard
-          </button>
-        </div>
+    <Card title="👪 Caregivers" color="#7A6FB3">
+      {emails === null ? (
+        <p className="text-sm text-slate-400">Loading…</p>
+      ) : emails.length === 0 ? (
+        <p className="text-sm text-slate-400">No caregivers found.</p>
+      ) : (
+        <ul className="space-y-1 text-sm text-slate-600">
+          {emails.map((e) => <li key={e}>{e}</li>)}
+        </ul>
       )}
-      <p className="mt-2 text-xs text-slate-400">
-        Tap a side to start; tap the other side to switch; tap again to pause.
-        The timer survives switching apps.
-      </p>
-      <RetroDirect insert={insert} />
     </Card>
-  );
-}
-
-/** Collapsible manual entry for past direct feeds (the pre-timer flow). */
-function RetroDirect({ insert }: { insert: Insert }) {
-  const [open, setOpen] = useState(false);
-  const [side, setSide] = useState<BreastSide>('both');
-  const [when, setWhen] = useState<string | null>(null);
-  const log = (min: number) =>
-    insert('feeds', {
-      // picked time = feed START; "now" mode backdates by the duration
-      ts: tsFrom(when, min * 60000),
-      delivery: 'breast', substance: 'breast_milk', duration_min: min, side,
-    }, `${min} min at breast${when ? ' (backdated)' : ''}`);
-  if (!open) {
-    return (
-      <button className="mt-2 text-xs text-slate-400 underline" onClick={() => setOpen(true)}>
-        or log a past feed without the timer
-      </button>
-    );
-  }
-  return (
-    <div className="mt-3 border-t border-slate-100 pt-3">
-      <div className="mb-3 flex gap-2">
-        {(['L', 'both', 'R'] as BreastSide[]).map((s) => (
-          <Chip key={s} active={side === s} onClick={() => setSide(s)}>
-            {s === 'both' ? 'Both' : s}
-          </Chip>
-        ))}
-      </div>
-      <WhenPicker value={when} onChange={setWhen} label="Started:" />
-      <div className="flex flex-wrap gap-2">
-        {[10, 15, 20, 30, 45].map((min) => (
-          <Chip key={min} onClick={() => log(min)}>{min} min</Chip>
-        ))}
-        <CustomNumber unit="min" onSubmit={log} />
-      </div>
-    </div>
   );
 }
 
