@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import type { FeedSubstance } from '../lib/types';
 import NotebookImport from './NotebookImport';
@@ -22,6 +22,7 @@ export default function QuickAdd({ childId }: { childId: string }) {
         </div>
       )}
       <Bottle insert={insert} />
+      <NextFeed childId={childId} />
       <SleepForm insert={insert} />
       <Caregivers childId={childId} />
       <DiaperForm insert={insert} />
@@ -108,11 +109,20 @@ function tsFrom(when: string | null, offsetMs = 0): string {
 function Bottle({ insert }: { insert: Insert }) {
   const [substance, setSubstance] = useState<FeedSubstance>('formula');
   const [when, setWhen] = useState<string | null>(nowLocal());
+  const [ml, setMl] = useState<number | null>(null);
+  const [custom, setCustom] = useState('');
   const color = substance === 'formula' ? '#E8973A' : '#2E86AB';
-  const log = (ml: number) =>
+  const amount = ml ?? Number(custom) ?? 0;
+
+  function save() {
+    if (!amount) return;
     insert('feeds', {
-      ts: tsFrom(when), delivery: 'bottle', substance, volume_ml: ml,
-    }, `bottle ${ml} mL${when ? ' (backdated)' : ''}`);
+      ts: tsFrom(when), delivery: 'bottle', substance, volume_ml: amount,
+    }, `bottle ${amount} mL${when ? ' (backdated)' : ''}`);
+    setMl(null);
+    setCustom('');
+  }
+
   return (
     <Card title="🍼 Bottle" color={color}>
       <div className="mb-3 flex gap-2">
@@ -122,12 +132,133 @@ function Bottle({ insert }: { insert: Insert }) {
           onClick={() => setSubstance('breast_milk')}>Breast milk</Chip>
       </div>
       <WhenPicker value={when} onChange={setWhen} />
-      <div className="flex flex-wrap gap-2">
-        {[120, 150, 180, 210, 240].map((ml) => (
-          <Chip key={ml} color={color} onClick={() => log(ml)}>{ml} mL</Chip>
+      {/* Picking an amount only selects it — nothing is logged until Save,
+       * so fixing the time afterward doesn't leave a stray earlier entry. */}
+      <div className="flex flex-wrap items-center gap-2">
+        {[120, 150, 180, 210, 240].map((v) => (
+          <Chip key={v} color={color} active={ml === v}
+            onClick={() => { setMl(v); setCustom(''); }}>{v} mL</Chip>
         ))}
-        <CustomNumber unit="mL" onSubmit={log} />
+        <input inputMode="numeric" placeholder="custom mL" value={custom}
+          onChange={(e) => { setCustom(e.target.value); setMl(null); }}
+          className="w-24 rounded-xl border border-slate-200 p-2.5 text-center text-sm" />
+        <Chip color={color} onClick={save}>Save{amount ? ` ${amount} mL` : ''}</Chip>
       </div>
+    </Card>
+  );
+}
+
+// Feeding window: a feed is due 3-4h after the last one, tracked only during
+// waking hours — overnight gaps naturally run longer and aren't "overdue".
+const DAY_START_HOUR = 7;
+const DAY_END_HOUR = 23;
+const FEED_MIN_H = 3;
+const FEED_MAX_H = 4;
+
+const isDaytime = (d: Date) => d.getHours() >= DAY_START_HOUR && d.getHours() < DAY_END_HOUR;
+
+function todayWindow(d: Date) {
+  const start = new Date(d); start.setHours(DAY_START_HOUR, 0, 0, 0);
+  const end = new Date(d); end.setHours(DAY_END_HOUR, 0, 0, 0);
+  return { start, end };
+}
+
+/** ms → "1h 10m" / "45m", for the countdown / overdue display. */
+function fmtDuration(ms: number) {
+  const totalMin = Math.max(0, Math.round(ms / 60000));
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+/** Countdown to the next feed (3-4h after the last one) plus which feed-of-
+ * the-day it'll be, counting within the 07:00-23:00 window only. */
+function NextFeed({ childId }: { childId: string }) {
+  const [lastFeedTs, setLastFeedTs] = useState<string | null>();
+  const [todayCount, setTodayCount] = useState(0);
+  const [, setTick] = useState(0);
+
+  const load = useCallback(async () => {
+    const { start, end } = todayWindow(new Date());
+    const [last, today] = await Promise.all([
+      supabase!.from('feeds').select('ts').eq('child_id', childId)
+        .order('ts', { ascending: false }).limit(1),
+      supabase!.from('feeds').select('id', { count: 'exact', head: true })
+        .eq('child_id', childId).gte('ts', start.toISOString()).lte('ts', end.toISOString()),
+    ]);
+    setLastFeedTs(last.data?.[0]?.ts ?? null);
+    setTodayCount(today.count ?? 0);
+  }, [childId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const ch = supabase!
+      .channel(`nextfeed-${childId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'feeds', filter: `child_id=eq.${childId}` },
+        () => void load())
+      .subscribe();
+    return () => void supabase!.removeChannel(ch);
+  }, [childId, load]);
+
+  // tick the countdown forward without re-querying the database
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (lastFeedTs === undefined) return null; // still loading
+
+  const now = new Date();
+  const daytime = isDaytime(now);
+
+  let status: React.ReactNode;
+  if (!lastFeedTs) {
+    status = <p className="text-sm text-slate-500">No feeds logged yet.</p>;
+  } else if (!daytime) {
+    status = (
+      <p className="text-sm text-slate-500">
+        Last feed at {new Date(lastFeedTs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </p>
+    );
+  } else {
+    const last = +new Date(lastFeedTs);
+    const earliest = last + FEED_MIN_H * 3600_000;
+    const latest = last + FEED_MAX_H * 3600_000;
+    const nowMs = +now;
+    if (nowMs < earliest) {
+      status = (
+        <p className="text-sm text-slate-600">
+          Next feed in{' '}
+          <span className="font-bold">
+            {fmtDuration(earliest - nowMs)} – {fmtDuration(latest - nowMs)}
+          </span>
+        </p>
+      );
+    } else if (nowMs < latest) {
+      status = (
+        <p className="text-sm font-semibold text-emerald-600">
+          Feed window open — closes in {fmtDuration(latest - nowMs)}
+        </p>
+      );
+    } else {
+      status = (
+        <p className="text-sm font-bold text-red-600">
+          Overdue by {fmtDuration(nowMs - latest)}
+        </p>
+      );
+    }
+  }
+
+  return (
+    <Card title="⏰ Next feed" color="#C75B7A">
+      {status}
+      {daytime && (
+        <p className="mt-1 text-xs text-slate-400">
+          Feed #{todayCount + 1} today (07:00–23:00)
+        </p>
+      )}
     </Card>
   );
 }
@@ -231,7 +362,7 @@ function SleepForm({ insert }: { insert: Insert }) {
         }}>Save</Chip>
       </div>
       <p className="mt-2 text-xs text-slate-400">
-        “Falling asleep now” starts an open sleep — end it from the Timeline.
+        "Falling asleep now" starts an open sleep — end it from the Timeline.
       </p>
     </Card>
   );
@@ -260,20 +391,5 @@ function GrowthForm({ insert }: { insert: Insert }) {
         }}>Save</Chip>
       </div>
     </Card>
-  );
-}
-
-function CustomNumber({ unit, onSubmit }: { unit: string; onSubmit: (n: number) => void }) {
-  const [v, setV] = useState('');
-  return (
-    <span className="inline-flex items-center gap-1">
-      <input inputMode="numeric" placeholder={`custom ${unit}`} value={v}
-        onChange={(e) => setV(e.target.value)}
-        className="w-24 rounded-xl border border-slate-200 p-2.5 text-center text-sm" />
-      <button className="text-sm font-semibold text-slate-500 underline"
-        onClick={() => { const n = Number(v); if (n > 0) { onSubmit(n); setV(''); } }}>
-        ok
-      </button>
-    </span>
   );
 }
