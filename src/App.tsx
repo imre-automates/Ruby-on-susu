@@ -3,11 +3,12 @@ import type { Session } from '@supabase/supabase-js';
 import Dashboard from './components/Dashboard';
 import NotConfigured from './components/NotConfigured';
 import QuickAdd from './components/QuickAdd';
+import Settings from './components/Settings';
 import Timeline from './components/Timeline';
 import { isConfigured, supabase } from './lib/supabase';
 import type { Child } from './lib/types';
 
-type Tab = 'log' | 'timeline' | 'dashboard';
+type Tab = 'log' | 'timeline' | 'dashboard' | 'settings';
 
 // Rename this to whatever you like — shown on the sign-in screen and title.
 const APP_NAME = 'Baby Tracker';
@@ -211,24 +212,29 @@ function Main({ onSignOut }: { onSignOut: () => void }) {
         {tab === 'log' && <QuickAdd childId={child.id} />}
         {tab === 'timeline' && <Timeline childId={child.id} />}
         {tab === 'dashboard' && <Dashboard child={child} />}
+        {tab === 'settings' && <Settings childId={child.id} />}
       </main>
 
+      {/* 4 items, same footprint as the old 3 — shrunk padding/icon/label
+       * rather than a taller bar. max-w-md + mx-auto keeps it centered and
+       * legible on desktop too, not just full-bleed on mobile. */}
       <nav className="fixed inset-x-0 bottom-0 mx-auto flex max-w-md border-t border-slate-200 bg-white/95 backdrop-blur">
         {(
           [
             ['log', '➕', 'Log'],
             ['timeline', '📜', 'Timeline'],
             ['dashboard', '📊', 'Dashboard'],
+            ['settings', '⚙️', 'Settings'],
           ] as [Tab, string, string][]
         ).map(([t, icon, label]) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`flex-1 py-3 text-center text-sm ${
+            className={`flex-1 py-2 text-center text-xs ${
               tab === t ? 'font-bold text-direct' : 'text-slate-400'
             }`}
           >
-            <span className="block text-lg">{icon}</span>
+            <span className="block text-base">{icon}</span>
             {label}
           </button>
         ))}
