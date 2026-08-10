@@ -136,7 +136,7 @@ function LogItemRow({ item, onVisibleChange }: {
       <button {...attributes} {...listeners} className="cursor-grab touch-none px-1 text-slate-300" aria-label="Drag to reorder">
         ⠿
       </button>
-      <span className="flex-1 text-sm font-medium text-slate-600">{LOG_ITEM_LABELS[item.key]}</span>
+      <span className="flex-1 min-w-0 text-sm font-medium text-slate-600">{LOG_ITEM_LABELS[item.key]}</span>
       <Toggle on={item.visible} onChange={onVisibleChange} />
     </li>
   );
@@ -191,7 +191,7 @@ function BottleConfig({ settings, save }: { settings: BabySettings; save: Save }
         <ul className="mb-2 space-y-1.5">
           {settings.bottle_presets_ml.map((ml, i) => (
             <li key={i} className="flex items-center gap-2 rounded-xl border border-slate-100 p-2">
-              <span className="flex-1 text-sm font-medium text-slate-600">{ml} mL</span>
+              <span className="flex-1 min-w-0 text-sm font-medium text-slate-600">{ml} mL</span>
               <button onClick={() => movePreset(i, -1)} disabled={i === 0}
                 className="px-1.5 text-slate-400 disabled:opacity-30">↑</button>
               <button onClick={() => movePreset(i, 1)} disabled={i === settings.bottle_presets_ml.length - 1}
@@ -272,6 +272,7 @@ const DASHBOARD_LABELS: Record<keyof DashboardVisible, string> = {
   formula_pct: 'Formula vs breastfeeding %',
   diapers_today: 'Diapers today',
   pumped_24h: 'Pumped (last 24h)',
+  sleep_24h: 'Sleep (last 24h)',
   chart_intake: 'Chart: daily intake by source vs target',
   chart_supply: 'Chart: breast-milk supply',
 };
@@ -293,7 +294,7 @@ function DashboardConfig({ settings, save }: { settings: BabySettings; save: Sav
       {(Object.keys(DASHBOARD_LABELS) as (keyof DashboardVisible)[]).map((key) => (
         <li key={key} className="rounded-xl border border-slate-100 p-2.5">
           <div className="flex items-center gap-2">
-            <span className="flex-1 text-sm font-medium text-slate-600">{DASHBOARD_LABELS[key]}</span>
+            <span className="flex-1 min-w-0 text-sm font-medium text-slate-600">{DASHBOARD_LABELS[key]}</span>
             <Toggle on={settings.dashboard_visible[key]} onChange={(v) => setVisible(key, v)} />
           </div>
           {/* Deliberately a separate control beneath the visibility toggle,

@@ -16,6 +16,7 @@ export interface DashboardVisible {
   formula_pct: boolean;
   diapers_today: boolean;
   pumped_24h: boolean;
+  sleep_24h: boolean;
   chart_intake: boolean;
   chart_supply: boolean;
 }
@@ -59,6 +60,7 @@ const DEFAULTS: Omit<BabySettings, 'child_id'> = {
     formula_pct: true,
     diapers_today: true,
     pumped_24h: true,
+    sleep_24h: true,
     chart_intake: true,
     chart_supply: true,
   },

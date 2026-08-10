@@ -15,6 +15,15 @@ interface Data {
   hasWeighIn: boolean;
   formulaPct24: number | null; // formula share of intake over the past 24h
   pumped24: number; // mL pumped over the rolling past 24h
+  sleepMin24: number; // minutes slept, overlapping the rolling past 24h
+}
+
+/** Minutes of [start, end] that overlap [winStart, winEnd] — end null means
+ * still ongoing (an open sleep counts up to the window's end, i.e. now). */
+function overlapMinutes(start: string, end: string | null, winStart: number, winEnd: number) {
+  const s = Math.max(+new Date(start), winStart);
+  const e = Math.min(end ? +new Date(end) : winEnd, winEnd);
+  return Math.max(0, e - s) / 60000;
 }
 
 export default function Dashboard({ child }: { child: Child }) {
@@ -33,7 +42,9 @@ export default function Dashboard({ child }: { child: Child }) {
     const diaperRows = (diapers.data ?? []) as Diaper[];
     const feedRows = (feeds.data ?? []) as Feed[];
     const pumpRows = (pumps.data ?? []) as Pump[];
-    const since24 = Date.now() - 24 * 3600 * 1000;
+    const sleepRows = (sleeps.data ?? []) as Sleep[];
+    const now = Date.now();
+    const since24 = now - 24 * 3600 * 1000;
 
     // Formula share of estimated intake over the rolling past 24 hours.
     const f24 = feedRows.filter((f) => +new Date(f.ts) >= since24);
@@ -52,11 +63,13 @@ export default function Dashboard({ child }: { child: Child }) {
       pumped24: pumpRows
         .filter((p) => +new Date(p.ts) >= since24)
         .reduce((a, p) => a + p.total_ml, 0),
+      sleepMin24: sleepRows
+        .reduce((a, s) => a + overlapMinutes(s.start_ts, s.end_ts, since24, now), 0),
       rows: dailyRollup({
         feeds: feedRows,
         pumps: pumpRows,
         diapers: diaperRows,
-        sleeps: (sleeps.data ?? []) as Sleep[],
+        sleeps: sleepRows,
         growth: (growth.data ?? []) as Growth[],
         birthWeightG: child.birth_weight_g,
         dob: child.dob,
@@ -85,7 +98,7 @@ export default function Dashboard({ child }: { child: Child }) {
   }, [load]);
 
   if (!data) return <p className="pt-8 text-center text-slate-400">Crunching…</p>;
-  const { rows, hasWeighIn, formulaPct24, pumped24 } = data;
+  const { rows, hasWeighIn, formulaPct24, pumped24, sleepMin24 } = data;
   const today = rows[rows.length - 1];
   // Intake & diapers are calendar-day figures against daily targets, so their
   // warnings are paced by how much of the local day has elapsed — a quiet
@@ -108,7 +121,9 @@ export default function Dashboard({ child }: { child: Child }) {
   // Target line stays the weight-based calculation (rollup.ts), unaffected.
   const override = settings.target_intake_ml_override;
   const effectiveTarget = override ?? today.targetMl;
-  const anyKpiVisible = vis.intake_today || vis.formula_pct || vis.diapers_today || vis.pumped_24h;
+  const anyKpiVisible = vis.intake_today || vis.formula_pct || vis.diapers_today
+    || vis.pumped_24h || vis.sleep_24h;
+  const sleepHM = `${Math.floor(sleepMin24 / 60)}h ${Math.round(sleepMin24 % 60)}m`;
 
   return (
     <div className="space-y-4 pt-2">
@@ -140,6 +155,10 @@ export default function Dashboard({ child }: { child: Child }) {
           {vis.pumped_24h && (
             <Kpi label="Pumped (last 24h)" value={`${pumped24} mL`}
               sub={`7-day ${pumped7} mL`} />
+          )}
+          {vis.sleep_24h && (
+            <Kpi label="Sleep (last 24h)" value={sleepHM}
+              sub="counts the portion of each sleep that falls in the last 24h" />
           )}
         </div>
       )}
