@@ -203,3 +203,75 @@ create table ocr_jobs (
 alter table ocr_jobs enable row level security;
 create policy "own jobs" on ocr_jobs for all
   using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- ============================================================ Part 1: Settings --
+-- Per-baby (not per-user) configuration: log-item order/visibility, bottle
+-- defaults, next-feed window, dashboard visibility. One shared row per baby —
+-- either caregiver edits it, changes sync to both via Realtime.
+create table baby_settings (
+  child_id uuid primary key references children (id) on delete cascade,
+
+  -- Section 1: Log tab item order + visibility (everything except caregivers,
+  -- which is fixed at the bottom and not configurable). Array of
+  -- {"key": "...", "visible": bool}, in display order.
+  log_items jsonb not null default '[
+    {"key":"bottle","visible":true},
+    {"key":"next_feed","visible":true},
+    {"key":"sleep","visible":true},
+    {"key":"diaper","visible":true},
+    {"key":"weigh_in","visible":true},
+    {"key":"pump","visible":true},
+    {"key":"direct_breastfeed","visible":false},
+    {"key":"notebook_import","visible":true}
+  ]'::jsonb,
+
+  -- Section 2: bottle feeding config
+  bottle_default_substance feed_substance not null default 'formula',
+  bottle_presets_ml int[] not null default '{120,150,180,210,240}',
+
+  -- Section 3: next-feed card config
+  day_start_hour int not null default 7 check (day_start_hour between 0 and 23),
+  day_end_hour int not null default 23 check (day_end_hour between 0 and 23),
+  feed_min_interval_h numeric not null default 3 check (feed_min_interval_h > 0),
+  feed_max_interval_h numeric not null default 4
+    check (feed_max_interval_h > feed_min_interval_h),
+
+  -- Section 4: dashboard card/chart visibility + manual intake-target override
+  dashboard_visible jsonb not null default '{
+    "intake_today": true,
+    "formula_pct": true,
+    "diapers_today": true,
+    "pumped_24h": true,
+    "chart_intake": true,
+    "chart_supply": true
+  }'::jsonb,
+  target_intake_ml_override int check (target_intake_ml_override is null or target_intake_ml_override > 0),
+
+  updated_at timestamptz not null default now()
+);
+
+alter table baby_settings enable row level security;
+create policy "caregivers read settings" on baby_settings
+  for select using (is_caregiver(child_id));
+create policy "caregivers write settings" on baby_settings
+  for all using (is_caregiver(child_id)) with check (is_caregiver(child_id));
+
+alter publication supabase_realtime add table baby_settings;
+
+-- Explicit, in case this project's ALTER DEFAULT PRIVILEGES (set once while
+-- fixing an earlier "permission denied" issue) doesn't cover a table created
+-- in a fresh SQL Editor session — cheap insurance against that exact bug.
+grant all on baby_settings to anon, authenticated, service_role;
+
+-- Committing this here too (previously only run ad-hoc in the SQL editor) so
+-- the repo's schema.sql matches what's actually deployed.
+create or replace function list_caregivers(child uuid)
+returns table(email text) language sql stable security definer set search_path = public as
+$$
+  select u.email::text
+  from caregivers c
+  join auth.users u on u.id = c.user_id
+  where c.child_id = child and is_caregiver(child)
+$$;
+
+grant execute on function list_caregivers(uuid) to anon, authenticated;

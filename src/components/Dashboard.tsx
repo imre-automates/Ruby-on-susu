@@ -4,6 +4,7 @@ import {
 } from 'recharts';
 import { supabase } from '../lib/supabase';
 import { dailyRollup, localDateKey, type DayRow } from '../lib/rollup';
+import { useBabySettings } from '../lib/settings';
 import type { Child, Diaper, Feed, Growth, Pump, Sleep } from '../lib/types';
 import {
   COLORS, DIRECT_FEED_MEAN_KENT, DIRECT_ML_PER_FEED, directMlPerFeed, targetMlPerKg,
@@ -18,6 +19,8 @@ interface Data {
 
 export default function Dashboard({ child }: { child: Child }) {
   const [data, setData] = useState<Data | null>(null);
+  const { settings } = useBabySettings(child.id);
+  const vis = settings.dashboard_visible;
 
   const load = useCallback(async () => {
     const [feeds, pumps, diapers, sleeps, growth] = await Promise.all([
@@ -101,65 +104,97 @@ export default function Dashboard({ child }: { child: Child }) {
   // Total breast-milk supply = milk taken directly (modeled) + milk pumped.
   const supplyAll = sum(rows, 'directEstMl') + sum(rows, 'pumpedMl');
 
+  // Manual override only affects the "Intake today" KPI tile — the chart's
+  // Target line stays the weight-based calculation (rollup.ts), unaffected.
+  const override = settings.target_intake_ml_override;
+  const effectiveTarget = override ?? today.targetMl;
+  const anyKpiVisible = vis.intake_today || vis.formula_pct || vis.diapers_today || vis.pumped_24h;
+
   return (
     <div className="space-y-4 pt-2">
-      <div className="grid grid-cols-2 gap-2">
-        <Kpi label="Intake today (est)" value={`${today.totalEstMl} mL`}
-          sub={today.targetMl && today.weightG
-            ? `target ${today.targetMl} mL = ${(today.weightG / 1000).toFixed(2)} kg × ${
-                targetMlPerKg((Date.now() - +new Date(child.dob)) / 86400000)}${
-                hasWeighIn ? '' : ' (birth wt — add a weigh-in)'}`
-            : undefined}
-          warn={!!today.targetMl && today.totalEstMl < today.targetMl * dayFrac * 0.8} />
-        <Kpi label="Formula % (24h)"
-          value={formulaPct24 === null ? '—' : `${formulaPct24}%`}
-          sub={`7-day ${f7 ?? '—'}% · all-time ${fAll ?? '—'}%`} />
-        <Kpi label="Diapers today" value={`${today.wet} 💧 / ${today.dirty} 💩`}
-          sub="target ≥6 wet · ≥3 dirty / day"
-          warn={today.wet < Math.floor(6 * dayFrac) || today.dirty < Math.floor(3 * dayFrac)} />
-        <Kpi label="Pumped (last 24h)" value={`${pumped24} mL`}
-          sub={`7-day ${pumped7} mL`} />
-      </div>
-      <p className="-mt-2 px-1 text-[11px] text-slate-400">
-        Intake &amp; diapers count the calendar day (warnings scale with the time
-        of day); formula % and pumped are rolling 24-hour windows. Diaper targets
-        are the newborn adequacy guide, applicable after ~day 5.
-      </p>
+      {anyKpiVisible && (
+        <div className="grid grid-cols-2 gap-2">
+          {vis.intake_today && (
+            <Kpi label="Intake today (est)" value={`${today.totalEstMl} mL`}
+              sub={effectiveTarget
+                ? override
+                  ? `target ${effectiveTarget} mL (manual override)`
+                  : today.weightG
+                    ? `target ${effectiveTarget} mL = ${(today.weightG / 1000).toFixed(2)} kg × ${
+                        targetMlPerKg((Date.now() - +new Date(child.dob)) / 86400000)}${
+                        hasWeighIn ? '' : ' (birth wt — add a weigh-in)'}`
+                    : undefined
+                : undefined}
+              warn={!!effectiveTarget && today.totalEstMl < effectiveTarget * dayFrac * 0.8} />
+          )}
+          {vis.formula_pct && (
+            <Kpi label="Formula % (24h)"
+              value={formulaPct24 === null ? '—' : `${formulaPct24}%`}
+              sub={`7-day ${f7 ?? '—'}% · all-time ${fAll ?? '—'}%`} />
+          )}
+          {vis.diapers_today && (
+            <Kpi label="Diapers today" value={`${today.wet} 💧 / ${today.dirty} 💩`}
+              sub="target ≥6 wet · ≥3 dirty / day"
+              warn={today.wet < Math.floor(6 * dayFrac) || today.dirty < Math.floor(3 * dayFrac)} />
+          )}
+          {vis.pumped_24h && (
+            <Kpi label="Pumped (last 24h)" value={`${pumped24} mL`}
+              sub={`7-day ${pumped7} mL`} />
+          )}
+        </div>
+      )}
+      {anyKpiVisible && (
+        <p className="-mt-2 px-1 text-[11px] text-slate-400">
+          Intake &amp; diapers count the calendar day (warnings scale with the time
+          of day); formula % and pumped are rolling 24-hour windows. Diaper targets
+          are the newborn adequacy guide, applicable after ~day 5.
+        </p>
+      )}
 
-      <ChartCard title="Daily intake by source vs target"
-        note={`Pink = modeled direct-breast estimate (${DIRECT_ML_PER_FEED} mL/feed once established, ramped down over days 0–14 for colostrum/transition; ±40%): direct intake can't be measured. Basis: Kent et al. 2006, mean ${DIRECT_FEED_MEAN_KENT} mL/feed. Target ramps 60→150 mL/kg over week 1.`}>
-        <ComposedChart data={chart} margin={{ top: 4, right: 4, left: -18, bottom: 0 }}>
-          <XAxis dataKey="day" fontSize={10} tickMargin={4} />
-          <YAxis fontSize={10} />
-          <Tooltip content={<TotalTooltip />} />
-          <Legend wrapperStyle={{ fontSize: 11 }} />
-          <Bar dataKey="directEstMl" name="Direct (est)" stackId="a" fill={COLORS.direct} />
-          <Bar dataKey="ebmMl" name="EBM" stackId="a" fill={COLORS.ebm} />
-          <Bar dataKey="formulaMl" name="Formula" stackId="a" fill={COLORS.formula} />
-          <Line dataKey="targetMl" name="Target" stroke={COLORS.grey}
-            strokeDasharray="6 4" dot={false} />
-        </ComposedChart>
-      </ChartCard>
-
-      <ChartCard title="Breast-milk supply (direct + pumped)"
-        note="Total milk produced per day: what the baby took directly at the breast (estimated) plus what you pumped, split L / R.">
-        {supplyAll === 0 ? (
-          <div className="flex h-[200px] items-center justify-center px-4 text-center text-xs text-slate-400">
-            No direct feeds or pump sessions logged yet — log a breastfeed or a
-            pump (🥛, with left &amp; right volumes) and this fills in.
-          </div>
-        ) : (
+      {vis.chart_intake && (
+        <ChartCard title="Daily intake by source vs target"
+          note={`Pink = modeled direct-breast estimate (${DIRECT_ML_PER_FEED} mL/feed once established, ramped down over days 0–14 for colostrum/transition; ±40%): direct intake can't be measured. Basis: Kent et al. 2006, mean ${DIRECT_FEED_MEAN_KENT} mL/feed. Target ramps 60→150 mL/kg over week 1.`}>
           <ComposedChart data={chart} margin={{ top: 4, right: 4, left: -18, bottom: 0 }}>
             <XAxis dataKey="day" fontSize={10} tickMargin={4} />
             <YAxis fontSize={10} />
             <Tooltip content={<TotalTooltip />} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
-            <Bar dataKey="directEstMl" name="Direct (est)" stackId="s" fill={COLORS.direct} />
-            <Bar dataKey="pumpedLeftMl" name="Pump L" stackId="s" fill={COLORS.left} />
-            <Bar dataKey="pumpedRightMl" name="Pump R" stackId="s" fill={COLORS.right} />
+            <Bar dataKey="directEstMl" name="Direct (est)" stackId="a" fill={COLORS.direct} />
+            <Bar dataKey="ebmMl" name="EBM" stackId="a" fill={COLORS.ebm} />
+            <Bar dataKey="formulaMl" name="Formula" stackId="a" fill={COLORS.formula} />
+            <Line dataKey="targetMl" name="Target" stroke={COLORS.grey}
+              strokeDasharray="6 4" dot={false} />
           </ComposedChart>
-        )}
-      </ChartCard>
+        </ChartCard>
+      )}
+
+      {vis.chart_supply && (
+        <ChartCard title="Breast-milk supply (direct + pumped)"
+          note="Total milk produced per day: what the baby took directly at the breast (estimated) plus what you pumped, split L / R.">
+          {supplyAll === 0 ? (
+            <div className="flex h-[200px] items-center justify-center px-4 text-center text-xs text-slate-400">
+              No direct feeds or pump sessions logged yet — log a breastfeed or a
+              pump (🥛, with left &amp; right volumes) and this fills in.
+            </div>
+          ) : (
+            <ComposedChart data={chart} margin={{ top: 4, right: 4, left: -18, bottom: 0 }}>
+              <XAxis dataKey="day" fontSize={10} tickMargin={4} />
+              <YAxis fontSize={10} />
+              <Tooltip content={<TotalTooltip />} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="directEstMl" name="Direct (est)" stackId="s" fill={COLORS.direct} />
+              <Bar dataKey="pumpedLeftMl" name="Pump L" stackId="s" fill={COLORS.left} />
+              <Bar dataKey="pumpedRightMl" name="Pump R" stackId="s" fill={COLORS.right} />
+            </ComposedChart>
+          )}
+        </ChartCard>
+      )}
+
+      {!anyKpiVisible && !vis.chart_intake && !vis.chart_supply && (
+        <p className="pt-8 text-center text-sm text-slate-400">
+          Everything on this dashboard is hidden — turn some back on in Settings.
+        </p>
+      )}
     </div>
   );
 }
