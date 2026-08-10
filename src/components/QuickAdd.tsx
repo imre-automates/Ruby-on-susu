@@ -53,6 +53,7 @@ const LOG_COMPONENTS: Record<LogItemKey, React.ComponentType<ItemProps>> = {
   diaper: DiaperForm,
   weigh_in: GrowthForm,
   pump: PumpForm,
+  daily_remarks: DailyRemarks,
   notebook_import: NotebookImportItem,
 };
 
@@ -421,6 +422,77 @@ function RetroDirect({ insert }: { insert: Insert }) {
         <CustomNumber unit="min" onSubmit={log} />
       </div>
     </div>
+  );
+}
+
+interface Remark {
+  id: string;
+  remark_date: string;
+  text: string;
+  created_at: string;
+  email: string;
+}
+
+/** Freestanding shared journal — not attached to individual log entries.
+ * Both parents can add short remarks to a given date; shown chronologically
+ * with who wrote what. */
+function DailyRemarks({ childId, insert }: ItemProps) {
+  const [remarks, setRemarks] = useState<Remark[] | null>(null);
+  const [text, setText] = useState('');
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+  const load = useCallback(async () => {
+    const { data, error } = await supabase!.rpc('list_remarks', { child: childId });
+    setRemarks(error ? [] : (data as Remark[]));
+  }, [childId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const ch = supabase!
+      .channel(`remarks-${childId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'daily_remarks', filter: `child_id=eq.${childId}` },
+        () => void load())
+      .subscribe();
+    return () => void supabase!.removeChannel(ch);
+  }, [childId, load]);
+
+  function save() {
+    if (!text.trim()) return;
+    insert('daily_remarks', { remark_date: date, text: text.trim() }, 'remark added');
+    setText('');
+  }
+
+  return (
+    <Card title="📝 Daily remarks" color="#7A6FB3">
+      <div className="mb-2">
+        <input type="date" value={date} max={new Date().toISOString().slice(0, 10)}
+          onChange={(e) => setDate(e.target.value)}
+          className="rounded-xl border border-slate-200 p-2 text-sm" />
+      </div>
+      <div className="mb-3 flex items-center gap-2">
+        <input value={text} placeholder="Add a remark…"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && save()}
+          className="min-w-0 flex-1 rounded-xl border border-slate-200 p-2.5 text-sm" />
+        <Chip onClick={save}>Save</Chip>
+      </div>
+      {remarks === null ? (
+        <p className="text-sm text-slate-400">Loading…</p>
+      ) : remarks.length === 0 ? (
+        <p className="text-sm text-slate-400">No remarks yet.</p>
+      ) : (
+        <ul className="max-h-64 space-y-2 overflow-y-auto">
+          {remarks.map((r) => (
+            <li key={r.id} className="border-t border-slate-100 pt-2 text-sm">
+              <div className="min-w-0 break-words text-slate-600">{r.text}</div>
+              <div className="text-xs text-slate-400">{r.remark_date} · {r.email}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 

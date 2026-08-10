@@ -4,7 +4,7 @@ import type { FeedSubstance } from './types';
 
 export type LogItemKey =
   | 'bottle' | 'next_feed' | 'direct_breastfeed' | 'sleep' | 'diaper'
-  | 'weigh_in' | 'pump' | 'notebook_import';
+  | 'weigh_in' | 'pump' | 'daily_remarks' | 'notebook_import';
 
 export interface LogItemSetting {
   key: LogItemKey;
@@ -44,6 +44,7 @@ export const DEFAULT_LOG_ITEMS: LogItemSetting[] = [
   { key: 'weigh_in', visible: true },
   { key: 'pump', visible: true },
   { key: 'direct_breastfeed', visible: false }, // optional feature, off by default
+  { key: 'daily_remarks', visible: true },
   { key: 'notebook_import', visible: true },
 ];
 
@@ -75,6 +76,7 @@ export const LOG_ITEM_LABELS: Record<LogItemKey, string> = {
   diaper: '💩 Diaper',
   weigh_in: '⚖️ Weigh-in',
   pump: '🥛 Pump',
+  daily_remarks: '📝 Daily remarks',
   notebook_import: '📓 CSV import',
 };
 

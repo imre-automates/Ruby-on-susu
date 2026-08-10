@@ -132,7 +132,7 @@ function LogItemRow({ item, onVisibleChange }: {
   return (
     <li ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
-      className="flex items-center gap-2 rounded-xl border border-slate-100 bg-white p-2.5">
+      className="flex items-center gap-2 rounded-xl border border-slate-100 bg-white p-3">
       <button {...attributes} {...listeners} className="cursor-grab touch-none px-1 text-slate-300" aria-label="Drag to reorder">
         ⠿
       </button>
@@ -292,7 +292,7 @@ function DashboardConfig({ settings, save }: { settings: BabySettings; save: Sav
   return (
     <ul className="space-y-1.5">
       {(Object.keys(DASHBOARD_LABELS) as (keyof DashboardVisible)[]).map((key) => (
-        <li key={key} className="rounded-xl border border-slate-100 p-2.5">
+        <li key={key} className="rounded-xl border border-slate-100 p-3">
           <div className="flex items-center gap-2">
             <span className="flex-1 min-w-0 text-sm font-medium text-slate-600">{DASHBOARD_LABELS[key]}</span>
             <Toggle on={settings.dashboard_visible[key]} onChange={(v) => setVisible(key, v)} />

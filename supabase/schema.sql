@@ -275,3 +275,39 @@ $$
 $$;
 
 grant execute on function list_caregivers(uuid) to anon, authenticated;
+
+-- ==================================================== Part 2: Daily remarks --
+-- A freestanding shared journal (NOT notes on individual log entries) — both
+-- parents can add short remarks to a given date, chronological, shows who
+-- wrote what.
+create table daily_remarks (
+  id uuid primary key default gen_random_uuid(),
+  child_id uuid not null references children (id) on delete cascade,
+  remark_date date not null default (now()::date),
+  text text not null check (char_length(trim(text)) > 0),
+  caregiver_id uuid not null default auth.uid(),
+  created_at timestamptz not null default now()
+);
+
+alter table daily_remarks enable row level security;
+create policy "caregiver all" on daily_remarks for all
+  using (is_caregiver(child_id)) with check (is_caregiver(child_id));
+
+alter publication supabase_realtime add table daily_remarks;
+grant all on daily_remarks to anon, authenticated, service_role;
+
+-- Same security-definer pattern as list_caregivers: exposes the writer's
+-- email (not otherwise readable by anon/authenticated) but only for a child
+-- the caller is already a caregiver of.
+create or replace function list_remarks(child uuid)
+returns table(id uuid, remark_date date, text text, created_at timestamptz, email text)
+language sql stable security definer set search_path = public as
+$$
+  select r.id, r.remark_date, r.text, r.created_at, u.email::text
+  from daily_remarks r
+  join auth.users u on u.id = r.caregiver_id
+  where r.child_id = child and is_caregiver(child)
+  order by r.remark_date desc, r.created_at desc
+$$;
+
+grant execute on function list_remarks(uuid) to anon, authenticated;
