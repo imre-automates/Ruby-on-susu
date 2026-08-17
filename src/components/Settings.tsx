@@ -74,12 +74,15 @@ function Collapsible({ title, open, onToggle, children }: {
   );
 }
 
+// Pill button, same look as Chip elsewhere in the app — a plain inline
+// button (not an absolutely-positioned slider) so it can't visually
+// overflow its row the way the old iOS-style switch did.
 function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
   return (
     <button onClick={() => onChange(!on)} aria-pressed={on}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${on ? 'bg-direct' : 'bg-slate-200'}`}>
-      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-        on ? 'translate-x-5' : 'translate-x-0.5'}`} />
+      className={`shrink-0 rounded-xl border px-3 py-1.5 text-xs font-semibold ${
+        on ? 'border-direct bg-direct text-white' : 'border-slate-200 text-slate-400'}`}>
+      {on ? 'Visible' : 'Hidden'}
     </button>
   );
 }

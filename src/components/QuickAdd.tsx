@@ -54,6 +54,7 @@ const LOG_COMPONENTS: Record<LogItemKey, React.ComponentType<ItemProps>> = {
   weigh_in: GrowthForm,
   pump: PumpForm,
   daily_remarks: DailyRemarks,
+  daycare_import: DaycareImport,
   notebook_import: NotebookImportItem,
 };
 
@@ -425,6 +426,197 @@ function RetroDirect({ insert }: { insert: Insert }) {
   );
 }
 
+type DaycareRow =
+  | { type: 'sleep'; start: string; end: string }
+  | { type: 'feed'; time: string; ml: string };
+
+const FEED_ML_MIN = 30;
+const FEED_ML_MAX = 400;
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(',')[1] ?? '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+interface ParsedRow {
+  kind: 'sleep' | 'feed';
+  start: string | null;
+  end: string | null;
+  time: string | null;
+  ml: number | null;
+}
+
+/** Batch entry for a daycare's end-of-day summary — add a row per sleep or
+ * feed (typed manually, or pre-filled by uploading a screenshot), fix any
+ * flagged values, then one Save for everything at once. Nothing writes
+ * until Save; picking/typing/uploading never logs on its own. */
+function DaycareImport({ insert }: ItemProps) {
+  const [rows, setRows] = useState<DaycareRow[]>([]);
+  const [parsing, setParsing] = useState(false);
+  const [parseMsg, setParseMsg] = useState('');
+
+  function updateRow(i: number, patch: Partial<DaycareRow>) {
+    setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } as DaycareRow : r)));
+  }
+  function removeRow(i: number) {
+    setRows((rs) => rs.filter((_, idx) => idx !== i));
+  }
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // lets the same file be picked again later
+    if (!file) return;
+    setParsing(true);
+    setParseMsg('');
+    try {
+      const image = await fileToBase64(file);
+      const { data: { session } } = await supabase!.auth.getSession();
+      const resp = await fetch('/api/parse-daycare', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? ''}`,
+        },
+        body: JSON.stringify({ image, mediaType: file.type || 'image/jpeg' }),
+      });
+      const result = await resp.json();
+      if (!resp.ok) {
+        setParseMsg(`⚠ ${result.error ?? 'Parse failed'}`);
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const parsed: DaycareRow[] = ((result.rows ?? []) as ParsedRow[])
+        .map((r): DaycareRow | null => (
+          r.kind === 'sleep' && r.start && r.end
+            ? { type: 'sleep', start: `${today}T${r.start}`, end: `${today}T${r.end}` }
+            : r.kind === 'feed' && r.time && r.ml != null
+              ? { type: 'feed', time: `${today}T${r.time}`, ml: String(r.ml) }
+              : null
+        ))
+        .filter((r): r is DaycareRow => r !== null);
+      setRows((rs) => [...rs, ...parsed]);
+      // "fewer or more rows than expected → surface it, don't guess": we
+      // don't know the expected count, so just always show what came back
+      // and let a glance at the screenshot confirm nothing's missing.
+      const warnings = (result.warnings ?? []) as string[];
+      setParseMsg(
+        `✓ Parsed ${parsed.length} row${parsed.length === 1 ? '' : 's'} — review before saving.` +
+        (warnings.length ? ` ${warnings.length} thing${warnings.length === 1 ? '' : 's'} to check: ${warnings.join('; ')}` : ''),
+      );
+    } catch {
+      setParseMsg('⚠ Upload failed — try again');
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  function saveAll() {
+    const valid = rows.filter((r) =>
+      r.type === 'sleep' ? r.start && r.end : r.time && Number(r.ml) > 0);
+    if (!valid.length) return;
+    for (const r of valid) {
+      if (r.type === 'sleep') {
+        insert('sleeps', {
+          start_ts: new Date(r.start).toISOString(),
+          end_ts: new Date(r.end).toISOString(),
+        }, 'daycare sleep logged');
+      } else {
+        insert('feeds', {
+          ts: new Date(r.time).toISOString(),
+          delivery: 'bottle', substance: 'formula', volume_ml: Number(r.ml),
+        }, 'daycare feed logged');
+      }
+    }
+    setRows(rows.length === valid.length ? [] : rows.filter((r) => !valid.includes(r)));
+  }
+
+  const badFeed = (ml: string) => {
+    const n = Number(ml);
+    return n > 0 && (n < FEED_ML_MIN || n > FEED_ML_MAX);
+  };
+  const badSleep = (start: string, end: string) =>
+    !!start && !!end && new Date(end) <= new Date(start);
+
+  return (
+    <Card title="🏫 Daycare import" color="#8B6F47">
+      <p className="mb-3 text-xs text-slate-400">
+        Upload a screenshot of the daycare's summary to pre-fill rows below,
+        or add them manually — either way, nothing saves until you tap Save.
+        Flagged values (in red) still save; double-check them first.
+      </p>
+      <div className="mb-3">
+        <label className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-dashed px-3 py-2 text-xs font-semibold ${
+          parsing ? 'border-slate-200 text-slate-300' : 'border-slate-300 text-slate-500'}`}>
+          {parsing ? 'Reading…' : '📷 Upload daycare screenshot'}
+          <input type="file" accept="image/*" capture="environment" className="hidden"
+            onChange={(e) => void handleUpload(e)} disabled={parsing} />
+        </label>
+        {parseMsg && <p className="mt-1.5 text-xs text-slate-500">{parseMsg}</p>}
+      </div>
+      {rows.length > 0 && (
+        <ul className="mb-3 space-y-2">
+          {rows.map((r, i) => {
+            const flagged = r.type === 'sleep'
+              ? badSleep(r.start, r.end)
+              : badFeed(r.ml);
+            return (
+              <li key={i} className={`rounded-xl border p-2.5 ${
+                flagged ? 'border-red-300 bg-red-50' : 'border-slate-100'}`}>
+                {r.type === 'sleep' ? (
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span>😴</span>
+                    <input type="datetime-local" value={r.start}
+                      onChange={(e) => updateRow(i, { start: e.target.value })}
+                      className="rounded-lg border border-slate-200 p-1.5 text-xs" />
+                    <span className="text-slate-400">→</span>
+                    <input type="datetime-local" value={r.end}
+                      onChange={(e) => updateRow(i, { end: e.target.value })}
+                      className="rounded-lg border border-slate-200 p-1.5 text-xs" />
+                    <button onClick={() => removeRow(i)}
+                      className="ml-auto px-1.5 text-slate-300 hover:text-red-400">✕</button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span>🍼</span>
+                    <input type="datetime-local" value={r.time}
+                      onChange={(e) => updateRow(i, { time: e.target.value })}
+                      className="rounded-lg border border-slate-200 p-1.5 text-xs" />
+                    <input inputMode="numeric" placeholder="mL" value={r.ml}
+                      onChange={(e) => updateRow(i, { ml: e.target.value })}
+                      className="w-16 rounded-lg border border-slate-200 p-1.5 text-center text-xs" />
+                    <button onClick={() => removeRow(i)}
+                      className="ml-auto px-1.5 text-slate-300 hover:text-red-400">✕</button>
+                  </div>
+                )}
+                {flagged && (
+                  <p className="mt-1 text-xs font-semibold text-red-500">
+                    {r.type === 'sleep' ? 'End is before start' : `Outside ${FEED_ML_MIN}–${FEED_ML_MAX} mL`}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Chip color="#7A6FB3" onClick={() => setRows((rs) => [...rs, { type: 'sleep', start: '', end: '' }])}>
+          + Sleep row
+        </Chip>
+        <Chip color="#2E86AB" onClick={() => setRows((rs) => [...rs, { type: 'feed', time: '', ml: '' }])}>
+          + Feed row
+        </Chip>
+        {rows.length > 0 && (
+          <Chip color="#8B6F47" onClick={saveAll}>Save all ({rows.length})</Chip>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 interface Remark {
   id: string;
   remark_date: string;
@@ -587,15 +779,25 @@ function SleepForm({ insert }: ItemProps) {
           onChange={(e) => setEnd(e.target.value)}
           className="rounded-xl border border-slate-200 p-2" />
         <Chip color="#7A6FB3" onClick={() => {
-          if (!start || !end) return;
+          // End is optional: start alone still saves — an open sleep with a
+          // backdated start (the common case: baby actually fell asleep a
+          // few minutes before you got to open the app).
+          if (!start) return;
+          if (end && new Date(end) <= new Date(start)) {
+            return alert('End must be after start.');
+          }
           insert('sleeps', {
-            start_ts: new Date(start).toISOString(), end_ts: new Date(end).toISOString(),
-          }, 'sleep logged');
+            start_ts: new Date(start).toISOString(),
+            end_ts: end ? new Date(end).toISOString() : null,
+          }, end ? 'sleep logged' : 'sleep started (backdated)');
           setStart(''); setEnd('');
         }}>Save</Chip>
       </div>
       <p className="mt-2 text-xs text-slate-400">
-        "Falling asleep now" starts an open sleep — end it from the Timeline.
+        "Falling asleep now" starts an open sleep at the current time. To
+        backdate the start (baby fell asleep a few minutes ago), set just a
+        start time below and Save, leaving end blank — end it later from the
+        Timeline.
       </p>
     </Card>
   );
