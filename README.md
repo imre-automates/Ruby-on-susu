@@ -29,7 +29,8 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
   (~150 mL/kg/day), formula % (today / 7-day / all-time), breast-milk supply
   (direct estimate + pumped L/R), rolling-24h diaper adequacy, sleep
 - Optional: import history from a previous tracker's CSV export
-- Optional: OCR a photo of a handwritten paper log via the Anthropic API
+- Optional: daycare-app screenshot import — upload a photo of your daycare's
+  daily summary and it pre-fills sleep/feed rows for review before saving
 
 > **Not medical advice.** Estimates (especially direct-breast intake, which
 > can't be measured) are modeled, not measured. Weight checks with your
@@ -38,8 +39,9 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
 ## Tech
 
 Vite + React + TypeScript, Tailwind, Recharts, `vite-plugin-pwa`; Supabase
-(Postgres + Auth + Realtime) backend; deploys on Vercel. The optional OCR
-endpoint (`api/ocr.ts`) is a Vercel serverless function calling the Anthropic API.
+(Postgres + Auth + Realtime) backend; deploys on Vercel. The optional daycare
+screenshot parser (`api/parse-daycare.ts`) is a Vercel serverless function
+calling the Anthropic API.
 
 ## Self-host it
 
@@ -93,17 +95,23 @@ Timestamps in these exports are local wall-clock with no timezone, so run the
 import on a machine set to the timezone the log was recorded in. Imports are
 idempotent — re-running on an overlapping export only adds new rows.
 
-### 5. Optional — paper-log OCR
+### 5. Optional — daycare screenshot import
 
-If a caregiver keeps a handwritten log, `api/ocr.ts` can transcribe a photo of
-a page via the Anthropic API into reviewable entries.
+The "🏫 Daycare import" card can pre-fill its sleep/feed rows from a photo of
+your daycare app's daily summary, via `api/parse-daycare.ts`.
 
-1. Get an API key from console.anthropic.com.
-2. In Vercel → Settings → Environment Variables, add `ANTHROPIC_API_KEY`
+1. Get an API key from console.anthropic.com. You'll need to fund the account
+   (a small prepaid minimum) before a key actually works — usage itself is a
+   fraction of a cent per screenshot, well under that.
+2. Set a hard monthly spend cap on the key in the Anthropic console — the
+   code caps `max_tokens` and uses the cheapest vision-capable model, but the
+   account-level cap is the real backstop.
+3. In Vercel → Settings → Environment Variables, add `ANTHROPIC_API_KEY`
    (server-only — **no** `VITE_` prefix) and redeploy.
-3. The prompt in `api/ocr.ts` is tuned to one specific notebook format — edit
-   its "Conventions" section to match how *your* log is written, or remove the
-   endpoint and the "Caretaker's notebook" card if you don't need it.
+4. The prompt in `api/parse-daycare.ts` is tuned to one specific daycare
+   app's "Dagritme" summary format — edit its "Conventions" section to match
+   yours, or just don't use the upload button (the manual row-entry form
+   works standalone) if you don't need it.
 
 ## Notes
 

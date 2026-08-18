@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useBabySettings, type BabySettings, type LogItemKey } from '../lib/settings';
 import type { BreastSide, FeedSubstance } from '../lib/types';
-import NotebookImport from './NotebookImport';
 
 /** 3am-friendly logging: the common actions are ≤2 taps; every module can
  * also log retroactively via the "earlier" time picker. */
@@ -18,7 +17,10 @@ export default function QuickAdd({ childId }: { childId: string }) {
 
   if (loading) return <p className="pt-8 text-center text-slate-400">Loading…</p>;
 
-  const visible = settings.log_items.filter((i) => i.visible);
+  // Also drops any leftover key from a removed feature (e.g. an old
+  // notebook_import row still sitting in a baby_settings record) so a
+  // stale DB value can't crash the render.
+  const visible = settings.log_items.filter((i) => i.visible && i.key in LOG_COMPONENTS);
 
   return (
     <div className="space-y-5 pt-2">
@@ -55,12 +57,7 @@ const LOG_COMPONENTS: Record<LogItemKey, React.ComponentType<ItemProps>> = {
   pump: PumpForm,
   daily_remarks: DailyRemarks,
   daycare_import: DaycareImport,
-  notebook_import: NotebookImportItem,
 };
-
-function NotebookImportItem({ childId }: ItemProps) {
-  return <NotebookImport childId={childId} />;
-}
 
 export function Card({ title, color, children }: {
   title: string; color: string; children: React.ReactNode;

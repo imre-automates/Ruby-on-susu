@@ -4,7 +4,7 @@ import type { FeedSubstance } from './types';
 
 export type LogItemKey =
   | 'bottle' | 'next_feed' | 'direct_breastfeed' | 'sleep' | 'diaper'
-  | 'weigh_in' | 'pump' | 'daily_remarks' | 'daycare_import' | 'notebook_import';
+  | 'weigh_in' | 'pump' | 'daily_remarks' | 'daycare_import';
 
 export interface LogItemSetting {
   key: LogItemKey;
@@ -46,7 +46,6 @@ export const DEFAULT_LOG_ITEMS: LogItemSetting[] = [
   { key: 'direct_breastfeed', visible: false }, // optional feature, off by default
   { key: 'daily_remarks', visible: true },
   { key: 'daycare_import', visible: true },
-  { key: 'notebook_import', visible: true },
 ];
 
 const DEFAULTS: Omit<BabySettings, 'child_id'> = {
@@ -79,7 +78,6 @@ export const LOG_ITEM_LABELS: Record<LogItemKey, string> = {
   pump: '🥛 Pump',
   daily_remarks: '📝 Daily remarks',
   daycare_import: '🏫 Daycare import',
-  notebook_import: '📓 CSV import',
 };
 
 // Items whose own config collapsible in Settings should hide/show along with
