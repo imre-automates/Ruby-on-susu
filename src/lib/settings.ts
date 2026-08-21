@@ -102,9 +102,17 @@ interface DbRow {
 /** DB row (possibly missing fields from an older client) merged over defaults. */
 function normalize(childId: string, row: DbRow | null): BabySettings {
   if (!row) return { child_id: childId, ...DEFAULTS };
+  const stored = row.log_items?.length ? row.log_items : DEFAULT_LOG_ITEMS;
+  // Append any log item added to the app *after* this row was last saved
+  // (e.g. a brand-new feature) — otherwise it silently never appears for
+  // an account with pre-existing settings, since it's simply absent from
+  // their saved array rather than "missing" in a way the fallback above
+  // catches.
+  const known = new Set(stored.map((i) => i.key));
+  const log_items = [...stored, ...DEFAULT_LOG_ITEMS.filter((i) => !known.has(i.key))];
   return {
     child_id: childId,
-    log_items: row.log_items?.length ? row.log_items : DEFAULTS.log_items,
+    log_items,
     bottle_default_substance: row.bottle_default_substance ?? DEFAULTS.bottle_default_substance,
     bottle_presets_ml: row.bottle_presets_ml?.length ? row.bottle_presets_ml : DEFAULTS.bottle_presets_ml,
     day_start_hour: row.day_start_hour ?? DEFAULTS.day_start_hour,
