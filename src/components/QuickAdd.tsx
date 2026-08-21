@@ -50,6 +50,7 @@ type ItemProps = { insert: Insert; childId: string; settings: BabySettings };
 const LOG_COMPONENTS: Record<LogItemKey, React.ComponentType<ItemProps>> = {
   bottle: Bottle,
   next_feed: NextFeed,
+  vitamin_d: VitaminD,
   direct_breastfeed: Direct,
   sleep: SleepForm,
   diaper: DiaperForm,
@@ -277,6 +278,66 @@ function NextFeed({ childId, settings }: ItemProps) {
         <p className="mt-1 text-xs text-slate-400">
           Feed #{todayCount + 1} today ({String(dayStart).padStart(2, '0')}:00–{String(dayEnd).padStart(2, '0')}:00)
         </p>
+      )}
+    </Card>
+  );
+}
+
+const todayKey = () => new Date().toISOString().slice(0, 10);
+
+/** Shared per-baby daily checkbox — whichever parent ticks it, both see it.
+ * "Resets" for free at midnight since it just checks today's date; a poll
+ * every minute catches the rollover even if the tab's left open across it. */
+function VitaminD({ childId }: ItemProps) {
+  const [given, setGiven] = useState<boolean | null>(null); // null = loading
+
+  const load = useCallback(async () => {
+    const { data } = await supabase!.from('vitamin_d_doses').select('given')
+      .eq('child_id', childId).eq('dose_date', todayKey()).maybeSingle();
+    setGiven(data?.given ?? false);
+  }, [childId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const ch = supabase!
+      .channel(`vitd-${childId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'vitamin_d_doses', filter: `child_id=eq.${childId}` },
+        () => void load())
+      .subscribe();
+    return () => void supabase!.removeChannel(ch);
+  }, [childId, load]);
+
+  useEffect(() => {
+    const id = setInterval(() => void load(), 60_000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  async function setDose(value: boolean) {
+    setGiven(value); // optimistic
+    const { error } = await supabase!.from('vitamin_d_doses')
+      .upsert({ child_id: childId, dose_date: todayKey(), given: value });
+    if (error) { setGiven(!value); alert(`Failed: ${error.message}`); }
+  }
+
+  if (given === null) return null; // avoid a flash of the wrong state
+
+  return (
+    <Card title="💊 Vitamin D" color="#66BB6A">
+      {given ? (
+        <p className="text-sm text-slate-600">
+          ✓ Vitamin D was given today{' '}
+          <button onClick={() => setDose(false)} className="text-xs text-slate-400 underline">
+            undo
+          </button>
+        </p>
+      ) : (
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={false} onChange={() => setDose(true)}
+            className="h-5 w-5 rounded border-slate-300 text-direct" />
+          Give Vitamin D today
+        </label>
       )}
     </Card>
   );

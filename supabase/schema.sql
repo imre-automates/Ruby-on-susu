@@ -311,3 +311,23 @@ $$
 $$;
 
 grant execute on function list_remarks(uuid) to anon, authenticated;
+
+-- ================================================== Vitamin D checkbox --
+-- Shared per-baby, per-day dose flag — whichever parent ticks it, both see
+-- it. "Resets" for free at midnight: a new local date simply has no row
+-- yet, no scheduled job needed.
+create table vitamin_d_doses (
+  child_id uuid not null references children (id) on delete cascade,
+  dose_date date not null default (now()::date),
+  given boolean not null default true,
+  updated_by uuid default auth.uid(),
+  updated_at timestamptz not null default now(),
+  primary key (child_id, dose_date)
+);
+
+alter table vitamin_d_doses enable row level security;
+create policy "caregiver all" on vitamin_d_doses for all
+  using (is_caregiver(child_id)) with check (is_caregiver(child_id));
+
+alter publication supabase_realtime add table vitamin_d_doses;
+grant all on vitamin_d_doses to anon, authenticated, service_role;
