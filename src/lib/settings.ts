@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 import type { FeedSubstance } from './types';
 
 export type LogItemKey =
-  | 'bottle' | 'next_feed' | 'direct_breastfeed' | 'sleep' | 'diaper'
+  | 'bottle' | 'next_feed' | 'vitamin_d' | 'direct_breastfeed' | 'sleep' | 'diaper'
   | 'weigh_in' | 'pump' | 'daily_remarks' | 'daycare_import';
 
 export interface LogItemSetting {
@@ -39,6 +39,7 @@ export interface BabySettings {
 export const DEFAULT_LOG_ITEMS: LogItemSetting[] = [
   { key: 'bottle', visible: true },
   { key: 'next_feed', visible: true },
+  { key: 'vitamin_d', visible: true },
   { key: 'sleep', visible: true },
   { key: 'diaper', visible: true },
   { key: 'weigh_in', visible: true },
@@ -71,6 +72,7 @@ const DEFAULTS: Omit<BabySettings, 'child_id'> = {
 export const LOG_ITEM_LABELS: Record<LogItemKey, string> = {
   bottle: '🍼 Bottle',
   next_feed: '⏰ Next feed',
+  vitamin_d: '💊 Vitamin D',
   direct_breastfeed: '🤱 Direct breastfeed',
   sleep: '😴 Sleep',
   diaper: '💩 Diaper',
