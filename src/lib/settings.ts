@@ -3,8 +3,8 @@ import { supabase } from './supabase';
 import type { FeedSubstance } from './types';
 
 export type LogItemKey =
-  | 'bottle' | 'next_feed' | 'vitamin_d' | 'direct_breastfeed' | 'sleep' | 'diaper'
-  | 'weigh_in' | 'pump' | 'daily_remarks' | 'daycare_import';
+  | 'bottle' | 'next_feed' | 'vitamin_d' | 'direct_breastfeed' | 'sleep' | 'last_sleep'
+  | 'diaper' | 'weigh_in' | 'pump' | 'daily_remarks' | 'daycare_import';
 
 export interface LogItemSetting {
   key: LogItemKey;
@@ -19,6 +19,7 @@ export interface DashboardVisible {
   sleep_24h: boolean;
   chart_intake: boolean;
   chart_supply: boolean;
+  chart_sleep: boolean;
 }
 
 export interface BabySettings {
@@ -41,6 +42,7 @@ export const DEFAULT_LOG_ITEMS: LogItemSetting[] = [
   { key: 'next_feed', visible: true },
   { key: 'vitamin_d', visible: true },
   { key: 'sleep', visible: true },
+  { key: 'last_sleep', visible: true },
   { key: 'diaper', visible: true },
   { key: 'weigh_in', visible: true },
   { key: 'pump', visible: true },
@@ -65,6 +67,7 @@ const DEFAULTS: Omit<BabySettings, 'child_id'> = {
     sleep_24h: true,
     chart_intake: true,
     chart_supply: true,
+    chart_sleep: true,
   },
   target_intake_ml_override: null,
 };
@@ -75,6 +78,7 @@ export const LOG_ITEM_LABELS: Record<LogItemKey, string> = {
   vitamin_d: '💊 Vitamin D',
   direct_breastfeed: '🤱 Direct breastfeed',
   sleep: '😴 Sleep',
+  last_sleep: '🌙 Last sleep',
   diaper: '💩 Diaper',
   weigh_in: '⚖️ Weigh-in',
   pump: '🥛 Pump',

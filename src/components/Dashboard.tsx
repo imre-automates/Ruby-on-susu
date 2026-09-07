@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Bar, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
+import { fmtMinutes } from '../lib/format';
 import { supabase } from '../lib/supabase';
 import { dailyRollup, localDateKey, type DayRow } from '../lib/rollup';
 import { useBabySettings } from '../lib/settings';
@@ -104,7 +105,13 @@ export default function Dashboard({ child }: { child: Child }) {
   // warnings are paced by how much of the local day has elapsed — a quiet
   // morning shouldn't light every card red.
   const dayFrac = (Date.now() - new Date().setHours(0, 0, 0, 0)) / 86400000;
-  const chart = rows.slice(-30).map((r) => ({ ...r, day: r.date.slice(5).replace('-', '/') }));
+  const sleepWindow = rows.slice(-30);
+  const sleepAvgMin = sleepWindow.length
+    ? sleepWindow.reduce((a, r) => a + r.sleepMin, 0) / sleepWindow.length
+    : 0;
+  const chart = rows.slice(-30).map((r) => ({
+    ...r, day: r.date.slice(5).replace('-', '/'), sleepAvg: sleepAvgMin,
+  }));
 
   // Formula share: rolling 24h (headline), plus 7-day and all-time day-windows.
   const pct = (f: number, t: number) => (t ? Math.round((f / t) * 100) : null);
@@ -209,10 +216,48 @@ export default function Dashboard({ child }: { child: Child }) {
         </ChartCard>
       )}
 
-      {!anyKpiVisible && !vis.chart_intake && !vis.chart_supply && (
+      {vis.chart_sleep && (
+        <ChartCard title="Sleep per day"
+          note={`Total time asleep per day, with the ${sleepWindow.length}-day average as a dashed line.`}>
+          <ComposedChart data={chart} margin={{ top: 4, right: 4, left: -18, bottom: 0 }}>
+            <XAxis dataKey="day" fontSize={10} tickMargin={4} />
+            <YAxis fontSize={10} tickFormatter={(v: number) => `${Math.round(v / 60)}h`} />
+            <Tooltip content={<SleepTooltip />} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Bar dataKey="sleepMin" name="Sleep" fill={COLORS.sleep} />
+            <Line dataKey="sleepAvg" name="Average" stroke={COLORS.grey}
+              strokeDasharray="6 4" dot={false} />
+          </ComposedChart>
+        </ChartCard>
+      )}
+
+      {!anyKpiVisible && !vis.chart_intake && !vis.chart_supply && !vis.chart_sleep && (
         <p className="pt-8 text-center text-sm text-slate-400">
           Everything on this dashboard is hidden — turn some back on in Settings.
         </p>
+      )}
+    </div>
+  );
+}
+
+/** Sleep chart tooltip: the day's total plus the dashed Average line, both
+ * in hours/minutes rather than raw minutes. */
+function SleepTooltip({ active, payload, label }: {
+  active?: boolean;
+  payload?: { value?: number; dataKey?: string | number }[];
+  label?: string | number;
+}) {
+  if (!active || !payload?.length) return null;
+  const sleep = payload.find((p) => p.dataKey === 'sleepMin');
+  const avg = payload.find((p) => p.dataKey === 'sleepAvg');
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white/95 p-2.5 text-xs shadow-md">
+      <div className="mb-1 font-semibold text-slate-500">{label}</div>
+      {sleep && (
+        <div style={{ color: COLORS.sleep }}>Sleep : {fmtMinutes(Number(sleep.value))}</div>
+      )}
+      {avg && (
+        <div className="italic text-slate-500">Average : {fmtMinutes(Number(avg.value))}</div>
       )}
     </div>
   );
