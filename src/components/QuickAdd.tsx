@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { fmtDuration } from '../lib/format';
 import { supabase } from '../lib/supabase';
 import { useBabySettings, type BabySettings, type LogItemKey } from '../lib/settings';
 import type { BreastSide, FeedSubstance } from '../lib/types';
@@ -53,6 +54,7 @@ const LOG_COMPONENTS: Record<LogItemKey, React.ComponentType<ItemProps>> = {
   vitamin_d: VitaminD,
   direct_breastfeed: Direct,
   sleep: SleepForm,
+  last_sleep: LastSleep,
   diaper: DiaperForm,
   weigh_in: GrowthForm,
   pump: PumpForm,
@@ -173,13 +175,6 @@ function Bottle({ insert, settings }: ItemProps) {
   );
 }
 
-/** ms → "1h 10m" / "45m", for the countdown / overdue display. */
-function fmtDuration(ms: number) {
-  const totalMin = Math.max(0, Math.round(ms / 60000));
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
 
 /** Countdown to the next feed (settings.feed_min/max_interval_h after the
  * last one) plus which feed-of-the-day it'll be, counting within the
@@ -817,6 +812,68 @@ function DiaperForm({ insert }: ItemProps) {
       </div>
     </Card>
   );
+}
+
+interface LastSleepRow { start_ts: string; end_ts: string | null }
+
+/** Info-only card: the most recently logged sleep, live-updating — same
+ * pattern as Next Feed. Handles a still-open (ongoing) sleep separately
+ * from a completed one. */
+function LastSleep({ childId }: ItemProps) {
+  const [sleep, setSleep] = useState<LastSleepRow | null>();
+  const [, setTick] = useState(0);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase!.from('sleeps').select('start_ts, end_ts')
+      .eq('child_id', childId).order('start_ts', { ascending: false }).limit(1);
+    setSleep((data?.[0] as LastSleepRow) ?? null);
+  }, [childId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const ch = supabase!
+      .channel(`lastsleep-${childId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'sleeps', filter: `child_id=eq.${childId}` },
+        () => void load())
+      .subscribe();
+    return () => void supabase!.removeChannel(ch);
+  }, [childId, load]);
+
+  // keeps an ongoing sleep's "so far" duration ticking forward
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (sleep === undefined) return null; // still loading
+
+  const fmtTime = (ts: string) =>
+    new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  let body: React.ReactNode;
+  if (!sleep) {
+    body = <p className="text-sm text-slate-500">No sleep logged yet.</p>;
+  } else if (!sleep.end_ts) {
+    body = (
+      <p className="text-sm text-slate-600">
+        Sleeping since <span className="font-bold">{fmtTime(sleep.start_ts)}</span>
+        {' '}({fmtDuration(Date.now() - +new Date(sleep.start_ts))} so far)
+      </p>
+    );
+  } else {
+    body = (
+      <p className="text-sm text-slate-600">
+        {fmtTime(sleep.start_ts)} – {fmtTime(sleep.end_ts)}{' '}
+        (<span className="font-bold">
+          {fmtDuration(+new Date(sleep.end_ts) - +new Date(sleep.start_ts))}
+        </span>)
+      </p>
+    );
+  }
+
+  return <Card title="🌙 Last sleep" color="#7A6FB3">{body}</Card>;
 }
 
 function SleepForm({ insert }: ItemProps) {

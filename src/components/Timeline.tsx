@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { fmtMinutes } from '../lib/format';
 import { supabase } from '../lib/supabase';
 import type { BreastSide, Diaper, Feed, FeedSubstance, Pump, Sleep } from '../lib/types';
 
@@ -84,7 +85,7 @@ export default function Timeline({ childId }: { childId: string }) {
       ...((sleeps.data ?? []) as Sleep[]).map((s): Item => ({
         id: s.id, table: 'sleeps', ts: s.start_ts, raw: s, emoji: '😴', openSleep: !s.end_ts,
         label: s.end_ts
-          ? `Slept ${Math.round((+new Date(s.end_ts) - +new Date(s.start_ts)) / 60000)} min`
+          ? `Slept ${fmtMinutes((+new Date(s.end_ts) - +new Date(s.start_ts)) / 60000)}`
           : 'Sleeping… (tap ⏹ to end)',
       })),
     ].sort((a, b) => b.ts.localeCompare(a.ts));

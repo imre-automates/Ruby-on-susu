@@ -278,6 +278,7 @@ const DASHBOARD_LABELS: Record<keyof DashboardVisible, string> = {
   sleep_24h: 'Sleep (last 24h)',
   chart_intake: 'Chart: daily intake by source vs target',
   chart_supply: 'Chart: breast-milk supply',
+  chart_sleep: 'Chart: sleep per day',
 };
 
 function DashboardConfig({ settings, save }: { settings: BabySettings; save: Save }) {
