@@ -8,7 +8,15 @@ breast-milk supply, sleep and diaper adequacy.
 Installs to the home screen as a progressive web app (PWA), runs free on Supabase +
 Vercel, and every family's data stays in **their own** Supabase project.
 
-<!-- TODO: screenshots — Dashboard, Log tab, Settings tab -->
+<p>
+  <img src="docs/screenshots/dashboard.png" alt="Dashboard tab" width="32%">
+  <img src="docs/screenshots/log.png" alt="Log tab" width="32%">
+  <img src="docs/screenshots/settings-order.png" alt="Settings tab — log item order and visibility" width="32%">
+</p>
+<p>
+  <img src="docs/screenshots/settings-bottle.png" alt="Settings tab — bottle feeding config" width="32%">
+  <img src="docs/screenshots/settings-dashboard.png" alt="Settings tab — dashboard card visibility" width="32%">
+</p>
 
 ## Why it exists
 
