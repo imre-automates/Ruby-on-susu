@@ -3,7 +3,8 @@ import { supabase } from './supabase';
 import type { FeedSubstance } from './types';
 
 export type LogItemKey =
-  | 'bottle' | 'next_feed' | 'vitamin_d' | 'direct_breastfeed' | 'sleep' | 'last_sleep'
+  | 'bottle' | 'next_feed' | 'vitamin_d' | 'paracetamol' | 'next_paracetamol'
+  | 'direct_breastfeed' | 'sleep' | 'last_sleep'
   | 'diaper' | 'weigh_in' | 'pump' | 'daily_remarks' | 'daycare_import';
 
 export interface LogItemSetting {
@@ -33,6 +34,7 @@ export interface BabySettings {
   feed_max_interval_h: number;
   dashboard_visible: DashboardVisible;
   target_intake_ml_override: number | null;
+  paracetamol_doses_per_day: number;
 }
 
 // A fresh fork that never opens Settings must behave exactly like the app
@@ -41,6 +43,8 @@ export const DEFAULT_LOG_ITEMS: LogItemSetting[] = [
   { key: 'bottle', visible: true },
   { key: 'next_feed', visible: true },
   { key: 'vitamin_d', visible: true },
+  { key: 'paracetamol', visible: true },
+  { key: 'next_paracetamol', visible: true },
   { key: 'sleep', visible: true },
   { key: 'last_sleep', visible: true },
   { key: 'diaper', visible: true },
@@ -70,12 +74,16 @@ const DEFAULTS: Omit<BabySettings, 'child_id'> = {
     chart_sleep: true,
   },
   target_intake_ml_override: null,
+  // A common pediatric default (max 4x/24h, ~every 6h) — tune per baby in Settings.
+  paracetamol_doses_per_day: 4,
 };
 
 export const LOG_ITEM_LABELS: Record<LogItemKey, string> = {
   bottle: '🍼 Bottle',
   next_feed: '⏰ Next feed',
   vitamin_d: '💊 Vitamin D',
+  paracetamol: '🌡️ Paracetamol',
+  next_paracetamol: '⏳ Next paracetamol',
   direct_breastfeed: '🤱 Direct breastfeed',
   sleep: '😴 Sleep',
   last_sleep: '🌙 Last sleep',
@@ -88,7 +96,7 @@ export const LOG_ITEM_LABELS: Record<LogItemKey, string> = {
 
 // Items whose own config collapsible in Settings should hide/show along with
 // their visibility toggle in Section 1.
-export const CONFIGURABLE_LOG_ITEMS: LogItemKey[] = ['bottle', 'next_feed'];
+export const CONFIGURABLE_LOG_ITEMS: LogItemKey[] = ['bottle', 'next_feed', 'paracetamol'];
 
 interface DbRow {
   child_id: string;
@@ -101,6 +109,7 @@ interface DbRow {
   feed_max_interval_h: number | null;
   dashboard_visible: Partial<DashboardVisible> | null;
   target_intake_ml_override: number | null;
+  paracetamol_doses_per_day: number | null;
 }
 
 /** DB row (possibly missing fields from an older client) merged over defaults. */
@@ -125,6 +134,7 @@ function normalize(childId: string, row: DbRow | null): BabySettings {
     feed_max_interval_h: row.feed_max_interval_h ?? DEFAULTS.feed_max_interval_h,
     dashboard_visible: { ...DEFAULTS.dashboard_visible, ...(row.dashboard_visible ?? {}) },
     target_intake_ml_override: row.target_intake_ml_override ?? null,
+    paracetamol_doses_per_day: row.paracetamol_doses_per_day ?? DEFAULTS.paracetamol_doses_per_day,
   };
 }
 
@@ -137,30 +147,3 @@ export function useBabySettings(childId: string) {
       .from('baby_settings').select('*').eq('child_id', childId).maybeSingle();
     setSettings(normalize(childId, data as DbRow | null));
   }, [childId]);
-
-  useEffect(() => { void load(); }, [load]);
-
-  useEffect(() => {
-    const ch = supabase!
-      .channel(`baby_settings-${childId}`)
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'baby_settings', filter: `child_id=eq.${childId}` },
-        () => void load())
-      .subscribe();
-    return () => void supabase!.removeChannel(ch);
-  }, [childId, load]);
-
-  async function save(patch: Partial<Omit<BabySettings, 'child_id'>>) {
-    const base = settings ?? { child_id: childId, ...DEFAULTS };
-    const next = { ...base, ...patch };
-    setSettings(next); // optimistic — Realtime will reconcile
-    const { error } = await supabase!.from('baby_settings').upsert({ ...next });
-    if (error) alert(`Settings save failed: ${error.message}`);
-  }
-
-  return {
-    settings: settings ?? { child_id: childId, ...DEFAULTS },
-    loading: settings === null,
-    save,
-  };
-}
