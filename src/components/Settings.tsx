@@ -19,12 +19,15 @@ export default function Settings({ childId }: { childId: string }) {
   // [OPEN FOR INTERPRETATION]: order + default open/closed state of the
   // collapsibles — Logging options open by default (it's the one people
   // reach for most), the rest collapsed.
-  const [open, setOpen] = useState({ order: true, bottle: false, nextFeed: false, dashboard: false });
+  const [open, setOpen] = useState({
+    order: true, bottle: false, nextFeed: false, paracetamol: false, dashboard: false,
+  });
 
   if (loading) return <p className="pt-8 text-center text-slate-400">Loading…</p>;
 
   const bottleVisible = settings.log_items.find((i) => i.key === 'bottle')?.visible ?? false;
   const nextFeedVisible = settings.log_items.find((i) => i.key === 'next_feed')?.visible ?? false;
+  const paracetamolVisible = settings.log_items.find((i) => i.key === 'paracetamol')?.visible ?? false;
 
   return (
     <div className="space-y-4 pt-2 pb-8">
@@ -46,6 +49,13 @@ export default function Settings({ childId }: { childId: string }) {
         <Collapsible title="Next-feed card config" open={open.nextFeed}
           onToggle={() => setOpen((o) => ({ ...o, nextFeed: !o.nextFeed }))}>
           <NextFeedConfig settings={settings} save={save} />
+        </Collapsible>
+      )}
+
+      {paracetamolVisible && (
+        <Collapsible title="Paracetamol config" open={open.paracetamol}
+          onToggle={() => setOpen((o) => ({ ...o, paracetamol: !o.paracetamol }))}>
+          <ParacetamolConfig settings={settings} save={save} />
         </Collapsible>
       )}
 
@@ -265,6 +275,35 @@ function HourSelect({ value, onChange }: { value: number; onChange: (h: number) 
         <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
       ))}
     </select>
+  );
+}
+
+// --------------------------------------------- Section: paracetamol --
+
+function ParacetamolConfig({ settings, save }: { settings: BabySettings; save: Save }) {
+  function setPerDay(n: number) {
+    if (!Number.isInteger(n) || n <= 0) return;
+    void save({ paracetamol_doses_per_day: n });
+  }
+
+  const intervalH = 24 / settings.paracetamol_doses_per_day;
+
+  return (
+    <div>
+      <p className="mb-2 text-xs font-semibold text-slate-500">
+        Maximum doses per day — the "Next paracetamol" card uses this to work
+        out the minimum gap between doses and to flag the daily limit
+      </p>
+      <div className="flex items-center gap-2 text-sm">
+        <input inputMode="numeric" value={settings.paracetamol_doses_per_day}
+          onChange={(e) => setPerDay(Number(e.target.value))}
+          className={`${INPUT} w-16 text-center`} />
+        <span className="text-slate-500">times per day</span>
+      </div>
+      <p className="mt-2 text-xs text-slate-400">
+        That's a dose every {intervalH % 1 === 0 ? intervalH : intervalH.toFixed(1)}h.
+      </p>
+    </div>
   );
 }
 

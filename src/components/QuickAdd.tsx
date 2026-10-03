@@ -52,6 +52,8 @@ const LOG_COMPONENTS: Record<LogItemKey, React.ComponentType<ItemProps>> = {
   bottle: Bottle,
   next_feed: NextFeed,
   vitamin_d: VitaminD,
+  paracetamol: Paracetamol,
+  next_paracetamol: NextParacetamol,
   direct_breastfeed: Direct,
   sleep: SleepForm,
   last_sleep: LastSleep,
@@ -338,6 +340,96 @@ function VitaminD({ childId }: ItemProps) {
   );
 }
 
+/** Log a single paracetamol dose. Same backdated-time picker as elsewhere —
+ * nothing is logged until Save. */
+function Paracetamol({ insert }: ItemProps) {
+  const [when, setWhen] = useState<string | null>(null);
+
+  function save() {
+    insert('paracetamol_doses', { ts: tsFrom(when) }, `paracetamol given${when ? ' (backdated)' : ''}`);
+    setWhen(null);
+  }
+
+  return (
+    <Card title="🌡️ Paracetamol" color="#8E7CC3">
+      <WhenPicker value={when} onChange={setWhen} />
+      <Chip color="#8E7CC3" onClick={save}>Save dose</Chip>
+    </Card>
+  );
+}
+
+/** Countdown to the next allowed dose — 24h / settings.paracetamol_doses_per_day
+ * after the last one — plus how many doses have been given since local
+ * midnight, against the same configured daily count. */
+function NextParacetamol({ childId, settings }: ItemProps) {
+  const [lastDoseTs, setLastDoseTs] = useState<string | null>();
+  const [todayCount, setTodayCount] = useState(0);
+  const [, setTick] = useState(0);
+  const perDay = settings.paracetamol_doses_per_day;
+  const intervalH = 24 / perDay;
+
+  const load = useCallback(async () => {
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const [last, today] = await Promise.all([
+      supabase!.from('paracetamol_doses').select('ts').eq('child_id', childId)
+        .order('ts', { ascending: false }).limit(1),
+      supabase!.from('paracetamol_doses').select('id', { count: 'exact', head: true })
+        .eq('child_id', childId).gte('ts', start.toISOString()),
+    ]);
+    setLastDoseTs(last.data?.[0]?.ts ?? null);
+    setTodayCount(today.count ?? 0);
+  }, [childId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const ch = supabase!
+      .channel(`nextparacetamol-${childId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'paracetamol_doses', filter: `child_id=eq.${childId}` },
+        () => void load())
+      .subscribe();
+    return () => void supabase!.removeChannel(ch);
+  }, [childId, load]);
+
+  // tick the countdown forward without re-querying the database
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (lastDoseTs === undefined) return null; // still loading
+
+  let status: React.ReactNode;
+  if (!lastDoseTs) {
+    status = <p className="text-sm text-slate-500">No doses logged yet.</p>;
+  } else {
+    const next = +new Date(lastDoseTs) + intervalH * 3600_000;
+    const nowMs = Date.now();
+    status = nowMs < next ? (
+      <p className="text-sm text-slate-600">
+        Next dose in{' '}
+        <span className="font-bold">{fmtDuration(next - nowMs)}</span>
+        {' '}(at {new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+      </p>
+    ) : (
+      <p className="text-sm font-semibold text-emerald-600">Next dose available now</p>
+    );
+  }
+
+  return (
+    <Card title="⏳ Next paracetamol" color="#8E7CC3">
+      {status}
+      <p className="mt-1 text-xs text-slate-400">
+        {todayCount} of {perDay} doses given today (since midnight)
+        {todayCount >= perDay && (
+          <span className="font-semibold text-red-500"> — daily limit reached</span>
+        )}
+      </p>
+    </Card>
+  );
+}
+
 // ---- nursing timer (per-side, pause, switch) — optional, hidden by default
 interface NurseSeg { side: 'L' | 'R'; start: number; end: number | null }
 const NURSE_KEY = 'babytracker.nurse.timer';
@@ -519,10 +611,7 @@ function DaycareImport({ insert }: ItemProps) {
     setRows((rs) => rs.filter((_, idx) => idx !== i));
   }
 
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // lets the same file be picked again later
-    if (!file) return;
+  const handleFile = useCallback(async (file: File) => {
     setParsing(true);
     setParseMsg('');
     try {
@@ -565,7 +654,26 @@ function DaycareImport({ insert }: ItemProps) {
     } finally {
       setParsing(false);
     }
+  }, []);
+
+  function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // lets the same file be picked again later
+    if (file) void handleFile(file);
   }
+
+  // Lets a daycare screenshot be pasted straight from the clipboard
+  // (Cmd/Ctrl+V) instead of requiring it to be saved to Photos first.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const file = Array.from(e.clipboardData?.items ?? [])
+        .find((item) => item.type.startsWith('image/'))
+        ?.getAsFile();
+      if (file) void handleFile(file);
+    }
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [handleFile]);
 
   function saveAll() {
     const valid = rows.filter((r) =>
@@ -606,8 +714,11 @@ function DaycareImport({ insert }: ItemProps) {
           parsing ? 'border-slate-200 text-slate-300' : 'border-slate-300 text-slate-500'}`}>
           {parsing ? 'Reading…' : '📷 Upload daycare screenshot'}
           <input type="file" accept="image/*" className="hidden"
-            onChange={(e) => void handleUpload(e)} disabled={parsing} />
+            onChange={handleUpload} disabled={parsing} />
         </label>
+        <p className="mt-1.5 text-xs text-slate-400">
+          or just paste one (Cmd/Ctrl+V) — no need to save it to Photos first
+        </p>
         {parseMsg && <p className="mt-1.5 text-xs text-slate-500">{parseMsg}</p>}
       </div>
       {rows.length > 0 && (
