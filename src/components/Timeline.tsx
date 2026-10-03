@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fmtMinutes } from '../lib/format';
 import { supabase } from '../lib/supabase';
+import { useBabySettings, type LogItemKey } from '../lib/settings';
 import type {
   BreastSide, Diaper, Feed, FeedSubstance, ParacetamolDose, Pump, Sleep,
 } from '../lib/types';
@@ -17,13 +18,15 @@ interface Item {
   openSleep?: boolean;
 }
 
-// Multi-select filter chips; an empty selection means "show everything".
-const FILTERS: { table: ActivityTable; label: string; emoji: string }[] = [
-  { table: 'feeds', label: 'Feeds', emoji: '🍼' },
-  { table: 'pumps', label: 'Pumps', emoji: '🥛' },
-  { table: 'diapers', label: 'Diapers', emoji: '💧' },
-  { table: 'sleeps', label: 'Sleep', emoji: '😴' },
-  { table: 'paracetamol_doses', label: 'Paracetamol', emoji: '🌡️' },
+// Multi-select filter chips; an empty selection means "show everything". Each
+// one only appears if its matching log item is visible in Settings — hiding
+// "Pump" from the Log tab also hides the "Pumps" filter chip here.
+const FILTERS: { table: ActivityTable; label: string; emoji: string; requires: LogItemKey[] }[] = [
+  { table: 'feeds', label: 'Feeds', emoji: '🍼', requires: ['bottle', 'direct_breastfeed'] },
+  { table: 'sleeps', label: 'Sleep', emoji: '😴', requires: ['sleep'] },
+  { table: 'paracetamol_doses', label: 'Paracetamol', emoji: '🌡️', requires: ['paracetamol'] },
+  { table: 'diapers', label: 'Diapers', emoji: '💧', requires: ['diaper'] },
+  { table: 'pumps', label: 'Pumps', emoji: '🥛', requires: ['pump'] },
 ];
 
 // Lookback window; null = full history.
@@ -47,10 +50,14 @@ const nowLocal = () => toLocal(new Date().toISOString());
 const INPUT = 'rounded-lg border border-slate-200 bg-white p-1.5';
 
 export default function Timeline({ childId }: { childId: string }) {
+  const { settings } = useBabySettings(childId);
   const [items, setItems] = useState<Item[] | null>(null);
   const [active, setActive] = useState<ActivityTable[]>([]);
   const [rangeDays, setRangeDays] = useState<number | null>(7);
   const [editing, setEditing] = useState<string | null>(null); // `${table}-${id}`
+
+  const visibleKeys = new Set(settings.log_items.filter((i) => i.visible).map((i) => i.key));
+  const shownFilters = FILTERS.filter((f) => f.requires.some((k) => visibleKeys.has(k)));
 
   const toggle = (t: ActivityTable) =>
     setActive((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
@@ -126,12 +133,12 @@ export default function Timeline({ childId }: { childId: string }) {
 
   return (
     <div className="pt-2">
-      <div className="flex flex-wrap gap-1.5 pb-2">
-        {FILTERS.map((f) => {
+      <div className="flex gap-1.5 overflow-x-auto pb-2">
+        {shownFilters.map((f) => {
           const on = active.includes(f.table);
           return (
             <button key={f.table} onClick={() => toggle(f.table)} aria-pressed={on}
-              className={`rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+              className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
                 on ? 'border-slate-600 bg-slate-600 text-white'
                    : 'border-slate-200 bg-white text-slate-500'}`}>
               {f.emoji} {f.label}
