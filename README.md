@@ -33,7 +33,9 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
 ## Features
 
 - Multi-caregiver access with realtime sync (Supabase Realtime + row-level
-  security) — invite a partner, grandparent, or anyone else by email
+  security) — link a partner, grandparent, or anyone else to the baby by
+  their email once they've signed up (this doesn't send them anything;
+  they need to create their own account first — see setup step 2)
 - **Settings tab**, per baby: show/hide and drag-reorder every log item, set
   bottle defaults/presets, tune the next-feed interval window, configure how
   many paracetamol doses are allowed per day, and toggle each Dashboard card
@@ -43,9 +45,10 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
     no end time yet), and weigh-ins
   - **Vitamin D** — a shared daily checkbox, resets at the device's local midnight
   - **Paracetamol** — logs a timestamped dose, warns if it's given sooner than
-    a fixed 4h gap, and a companion "Next paracetamol" card shows the next
-    safe window and a rolling-24h dose count against your configured daily
-    limit (see *Design decisions & known limitations* below)
+    a fixed 4h gap, and a companion "Next paracetamol" card computes the
+    earliest next dose under that same 4h floor plus a rolling-24h dose count
+    against your configured daily limit (see *Design decisions & known
+    limitations* below — the 4h figure isn't sourced medical guidance)
   - **Daily remarks** — a shared, dated journal both caregivers can write to
   - **Daycare import** — a batch-entry card for a daycare's end-of-day
     summary; type rows manually, or upload/paste a screenshot and an AI call
@@ -83,17 +86,37 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
   never read or write a child they weren't explicitly invited to; there's no
   "public" or anonymous read path to any family's data.
 - For a genuinely private, invite-only deployment, turn off public sign-ups
-  in Supabase once everyone's created their account (see setup step 1.3).
-- `api/parse-daycare.ts` (the AI import) requires a valid Supabase session
-  JWT and confirms the caller is a caregiver on at least one child before it
-  will call Anthropic — the endpoint is publicly reachable by URL, but an
-  unauthenticated or unrelated caller cannot spend your Anthropic budget
-  through it. It also caps the uploaded image at 5MB and ignores everything
-  in the screenshot except sleep/feed rows. The image is sent to Anthropic's
-  API (model `claude-haiku-4-5-20251001`) for parsing — if you're not
-  comfortable sending a daycare screenshot to a third-party API, skip that
-  setup step and use the manual row-entry form instead, which never leaves
-  your Supabase project.
+  in Supabase once everyone's created their account (see setup step 2).
+- **If you leave sign-ups open**, know what that does and doesn't protect:
+  `api/parse-daycare.ts` (the AI import) only checks that the caller is *a*
+  caregiver of *some* child — and since anyone can create their own empty
+  one, that check alone doesn't prove they're a real family member, not a
+  stranger who just signed up to use your Anthropic key for free. What
+  actually bounds that is a server-side daily call limit per account
+  (`DAILY_LIMIT` in `api/parse-daycare.ts`, backed by
+  `bump_daycare_import_usage()` in `schema.sql`) plus the image size cap
+  (5MB) and the low `max_tokens`; your Anthropic account's own monthly spend
+  cap (setup step 5.2) is the last-resort backstop, not the primary one.
+  The full image is sent to Anthropic (model `claude-haiku-4-5-20251001`)
+  for parsing — only sleep/feed rows are extracted from its response, but
+  the image itself isn't filtered before it's sent. If you're not
+  comfortable with a daycare screenshot leaving your Supabase project, skip
+  that setup step; the manual row-entry form works standalone.
+- `merge_duplicate_child()` (see *Design decisions* below) is a
+  database-admin maintenance tool, not an app feature, and is deliberately
+  **not** reachable through the app's API: Postgres grants `EXECUTE` on every
+  new function to `PUBLIC` by default (unlike tables), so `schema.sql`
+  explicitly revokes it back off and never re-grants it to
+  anon/authenticated/service_role. Verified by calling it as an ordinary
+  database role against a scratch database and confirming Postgres itself
+  refuses with "permission denied for function" before the function body
+  ever runs — and, separately, that the Supabase SQL Editor's own role can
+  still call it and that it correctly migrates data and carries caregiver
+  access forward. (An earlier version tried to allow it instead, gated on an
+  in-function check of which role was calling — that was actually a no-op
+  for every caller due to a SECURITY DEFINER subtlety, caught only by
+  invoking it, not by reading the SQL; revoking the grant outright is both
+  simpler and verifiable.)
 
 ## Design decisions & known limitations
 
@@ -101,25 +124,39 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
   (`PARACETAMOL_MIN_GAP_H` in `src/lib/settings.ts`), not configurable
   through the UI like the daily-dose-count limit is. It's a conservative
   floor, not sourced medical guidance — actual safe intervals depend on the
-  product and the baby's age/weight, so treat the warning as a reminder to
-  check, not as dosing advice.
+  product and the baby's age/weight, so treat the warning (and the "Next
+  paracetamol" card's countdown) as a reminder to check, not as dosing
+  advice from the app.
 - **The 150 mL/kg/day intake target** is a common rule of thumb for young
   infants, already ramped from 60→150 mL/kg over the first week
   (`src/lib/types.ts`) rather than applied flatly from day one, and is
   overridable per baby in Settings → Dashboard (manual target override) for
   when it stops fitting as the baby grows.
-- **`schema.sql` is idempotent and safe to re-run** on an existing project —
-  every statement is `IF NOT EXISTS` / `CREATE OR REPLACE` / guarded against
-  already existing, so pulling a fork update that adds a table and re-pasting
-  the whole file picks up only what's missing. There's no formal migration
-  system beyond that — for anything beyond "run the latest schema.sql again",
-  you're working directly in the SQL Editor.
-- **Duplicate baby records**: if this ever happens (see *Notes* below), use
-  the `merge_duplicate_child()` SQL function in `schema.sql` rather than
-  hand-written `UPDATE` statements — it's kept in sync with every table that
-  has a `child_id`, runs as one transaction, and re-attaches any caregiver
-  who was only invited to the record being dropped (otherwise they'd
-  silently lose access to the baby entirely).
+- **`schema.sql`'s idempotency is real but scoped** — verified by actually
+  running the file three times in a row against a scratch Postgres database
+  (not just reasoning about the SQL) and hitting zero errors each time,
+  including the specific upgrade case of an existing `baby_settings` table
+  from before `paracetamol_doses_per_day` existed. What that covers: every
+  `CREATE TABLE`/`TYPE`/`INDEX` is `IF NOT EXISTS`, every policy is dropped
+  and recreated (Postgres has no `CREATE OR REPLACE POLICY`), and a small
+  `ensure_realtime()` helper guards `ALTER PUBLICATION ... ADD TABLE`, which
+  otherwise errors on a table already published — that one only surfaces on
+  a second run, so it's exactly the kind of gap "I re-read the SQL and it
+  looked fine" would have missed. What it does **not** cover: a column added
+  to an *existing* table only counts if there's an explicit
+  `ADD COLUMN IF NOT EXISTS` for it, like `baby_settings.paracetamol_doses_per_day`
+  has — a future column added without one won't retroactively appear on an
+  upgrade. There's no formal migration system beyond that.
+- **Duplicate baby records** can happen because the app never auto-creates
+  one, but nothing stops two caregivers from each tapping "create" before
+  inviting each other — they end up with two separate records for the same
+  baby, logging and viewing can land on different ones, and data appears to
+  vanish. The app warns you when it sees more than one. Fix it from the SQL
+  Editor with `select merge_duplicate_child('KEEP-uuid', 'DROP-uuid');` —
+  it's kept in sync with every table that has a `child_id`, runs as one
+  transaction, and re-attaches any caregiver who was only invited to the
+  record being dropped (a hand-written `UPDATE` list wouldn't; that caregiver
+  would silently lose access to the baby entirely).
 
 ## Tech
 
@@ -138,11 +175,13 @@ You need free **Supabase** and **Vercel** accounts, and Node 20+.
 1. Create a project at supabase.com.
 2. **SQL Editor → New query** → paste all of [`supabase/schema.sql`](supabase/schema.sql) → run.
    This creates every table, row-level security policy, the caregiver model,
-   and realtime — one run sets up the whole app. It's idempotent, so if you
-   pull a fork update later, re-running the whole file is safe.
-3. **Authentication → Sign In / Providers → Email**: for a private family app,
-   turn **off** "Allow new users to sign up" after everyone's created their
-   account (invite-only). Optionally disable email confirmation for known users.
+   and realtime — one run sets up the whole app (see *Design decisions* below
+   for exactly what re-running it later after a fork update does and doesn't pick up).
+3. **Authentication → Sign In / Providers → Email**: leave sign-ups on for
+   now — everyone needs to create an account first (step 2 below turns this
+   off once they have). If it's just you and people you already know and
+   trust, you can also turn off "Confirm email" here, since there's no one
+   else's identity to verify.
 4. **Project Settings → API**: copy the Project URL and the publishable (anon)
    key.
 
@@ -158,7 +197,18 @@ Sign up. The **first** caregiver fills in the baby's name / DOB / birth weight
 once. Anyone else signs up, then the first caregiver opens **Caregivers** at
 the bottom of the Log tab and invites them by email — this links both
 accounts to the one baby. Don't create a second baby record (see *Duplicate
-records* below).
+baby records* under *Design decisions & known limitations* below).
+
+Once everyone who needs an account has one, go back to Supabase →
+Authentication → Sign In / Providers → Email and turn **off** "Allow new
+users to sign up" for an invite-only deployment (see *Security model* above
+for exactly what this does and doesn't protect against). To add a new
+caregiver later — a new grandparent, say — turn it back on, have them sign
+up, invite them, then turn it back off.
+
+`npm run dev` is plain Vite — it doesn't serve the `/api` serverless
+functions, so the AI daycare-screenshot import (step 5 below) only works
+once deployed to Vercel, not locally. The manual row-entry form works either way.
 
 ### 3. Deploy
 
@@ -167,15 +217,25 @@ two `VITE_*` environment variables, and deploy. On each phone, open the URL and
 **Add to Home Screen** (iOS Safari) / **Install app** (Android Chrome) for the
 standalone PWA.
 
+If you left "Confirm email" on in step 1.3, also update Supabase →
+Authentication → URL Configuration → Site URL to your Vercel URL — it
+defaults to `localhost`, which is where confirmation/invite email links
+would otherwise point after you deploy.
+
 ### 4. Optional — import history from a CSV
 
-If your previous tracker exports a CSV (see the column format in
-[`src/lib/csv-import.ts`](src/lib/csv-import.ts)), you can bulk-import it:
+This was written against one specific previous tracker's export format (see
+the column parser in [`src/lib/csv-import.ts`](src/lib/csv-import.ts)) — if
+yours differs, adapt that file first. Then set two things in
+`.env.local`: `SUPABASE_SERVICE_ROLE_KEY` (Supabase → Project Settings → API,
+same page as the anon key from step 1.4, further down) and `CHILD_ID` (the
+baby's `id` from the `children` table — every imported row attaches to this
+one baby). Then:
 
 ```bash
 # dry run — parses and prints a daily summary, writes nothing
 npm run import:dry -- "path/to/export.csv"
-# apply — needs SUPABASE_SERVICE_ROLE_KEY in .env.local
+# apply
 npm run import -- "path/to/export.csv" --apply
 ```
 
@@ -194,9 +254,9 @@ the upload/paste shortcut.
 1. Get an API key from console.anthropic.com. You'll need to fund the account
    (a small prepaid minimum) before a key actually works — usage itself is a
    fraction of a cent per screenshot, well under that.
-2. Set a hard monthly spend cap on the key in the Anthropic console — the
-   code caps `max_tokens` and uses the cheapest vision-capable model
-   (`claude-haiku-4-5-20251001`), but the account-level cap is the real backstop.
+2. Set a hard monthly spend cap on the key in the Anthropic console — see
+   *Security model* above for what actually bounds cost day-to-day and why
+   this cap is the backstop, not the primary protection.
 3. In Vercel → Settings → Environment Variables, add `ANTHROPIC_API_KEY`
    (server-only — **no** `VITE_` prefix) and redeploy.
 4. The prompt in `api/parse-daycare.ts` is tuned to one specific daycare
@@ -204,19 +264,6 @@ the upload/paste shortcut.
    yours.
 5. On the Daycare import card, either tap the upload button or just paste a
    screenshot from your clipboard (Cmd/Ctrl+V) directly into the card.
-
-## Notes
-
-**Duplicate records.** The app never auto-creates a baby, but if two records
-ever exist for one baby (e.g. two caregivers both tapped "create" before
-inviting each other), logging and viewing can land on different ones and
-data appears to vanish. The app warns you when it sees more than one. To fix,
-run this in the SQL Editor (see `merge_duplicate_child()` in
-[`supabase/schema.sql`](supabase/schema.sql) for exactly what it does):
-
-```sql
-select merge_duplicate_child('KEEP-uuid', 'DROP-uuid');
-```
 
 ## Credits & forking
 
