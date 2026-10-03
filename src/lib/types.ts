@@ -44,6 +44,12 @@ export interface Sleep {
   note: string | null;
 }
 
+export interface ParacetamolDose {
+  id: string;
+  child_id: string;
+  ts: string;
+}
+
 export interface Growth {
   id: string;
   child_id: string;
