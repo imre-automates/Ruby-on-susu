@@ -1,10 +1,14 @@
 /**
  * Vercel serverless function: daycare app screenshot → sleep/feed rows.
  *
- * Cost-capped by design (single screenshot, at most once a day): cheapest
- * vision-capable model, a low max_tokens that makes a runaway response
- * structurally impossible, and the account's own hard monthly spend cap
- * (set that in the Anthropic console — this code can't enforce it).
+ * Cost-capped three ways: a low max_tokens that makes a runaway response
+ * structurally impossible, a per-account daily call limit enforced here
+ * (DAILY_LIMIT, via the bump_daycare_import_usage() DB function — this is
+ * the actual backstop against a signed-up stranger hammering the endpoint,
+ * since "is a caregiver of *a* child" alone doesn't imply they're a real
+ * family member; see README's Security model), and the Anthropic account's
+ * own hard monthly spend cap (set that in the console — this code can't
+ * enforce it, it's the last line of defense if the above is ever bypassed).
  *
  * Never writes to the database — the parsed rows land in the same editable
  * batch form as manual entry (DaycareImport), and only save on an explicit
@@ -65,9 +69,17 @@ const SCHEMA = {
   },
 } as const;
 
+// Generous enough for legitimate re-tries (misread screenshot, retake photo)
+// on top of the "once a day" intended use, tight enough to bound the cost of
+// an abused account to a small multiple of normal usage.
+const DAILY_LIMIT = 10;
+
 /** Validate the caller's Supabase JWT and confirm they're a caregiver on at
- * least one child, so an unauthenticated/unrelated caller can't spend the
- * family's Anthropic budget even though this URL is public. */
+ * least one child. Note this only proves "signed up and created/joined some
+ * child record" — since any signed-up user can create their own empty one
+ * (see README's Security model), this is an authentication check, not proof
+ * the caller is a real family member. DAILY_LIMIT below is what actually
+ * bounds the damage from that gap. */
 async function authedCaregiver(req: VercelRequest): Promise<SupabaseClient | null> {
   const url = process.env.VITE_SUPABASE_URL;
   const anon = process.env.VITE_SUPABASE_ANON_KEY;
@@ -90,8 +102,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured in Vercel' });
   }
-  if (!(await authedCaregiver(req))) {
+  const db = await authedCaregiver(req);
+  if (!db) {
     return res.status(401).json({ error: 'Sign in with a caregiver account to use this' });
+  }
+
+  // Atomic increment-and-return (see schema.sql) — avoids a check-then-insert
+  // race between two near-simultaneous requests from the same account.
+  const { data: usageCount, error: usageError } = await db.rpc('bump_daycare_import_usage');
+  if (usageError) {
+    return res.status(500).json({ error: `Usage check failed: ${usageError.message}` });
+  }
+  if ((usageCount as number) > DAILY_LIMIT) {
+    return res.status(429).json({
+      error: `Daily limit of ${DAILY_LIMIT} AI imports reached for this account — ` +
+        'try again tomorrow, or enter the rows manually.',
+    });
   }
 
   const { image, mediaType } = (req.body ?? {}) as { image?: string; mediaType?: string };

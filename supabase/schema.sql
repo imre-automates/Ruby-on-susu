@@ -1,12 +1,14 @@
--- Baby Tracker — Supabase schema (run once in SQL Editor: Dashboard → SQL → New query)
+-- Baby Tracker — Supabase schema. Run in SQL Editor: Dashboard → SQL → New
+-- query → paste this whole file → run. Safe to run again later too (e.g.
+-- after pulling a fork update) to pick up new tables/functions — see this
+-- repo's README, "Design decisions & known limitations", for exactly what
+-- that does and doesn't cover (new tables: yes; a new column on an existing
+-- table: only if it has its own explicit ADD COLUMN IF NOT EXISTS here).
+-- Verified idempotent by actually running this file three times in a row
+-- against a scratch database, not just by inspection.
+--
 -- Two-axis feed model: delivery (breast|bottle) × substance (breast_milk|formula).
 -- NEVER collapse these — every KPI depends on the separation.
---
--- Safe to re-run: every statement below is idempotent (IF NOT EXISTS / CREATE
--- OR REPLACE / DROP ... IF EXISTS before CREATE), so pasting the whole file
--- into an existing project's SQL Editor only adds whatever's missing — useful
--- after pulling updates from a fork that added new tables/functions. It will
--- never drop or alter data in a destructive way.
 
 do $$ begin
   create type feed_delivery as enum ('breast', 'bottle');
@@ -120,6 +122,22 @@ create index if not exists diapers_child_ts on diapers (child_id, ts desc);
 create index if not exists sleeps_child_ts on sleeps (child_id, start_ts desc);
 create index if not exists growth_child_ts on growth (child_id, measured_at desc);
 
+-- ALTER PUBLICATION ... ADD TABLE has no IF NOT EXISTS form and errors if the
+-- table's already a member — this wrapper is what actually makes re-running
+-- this file idempotent for realtime registration (verified by running this
+-- whole file twice against a scratch database; the bare ALTER form did not
+-- survive that test).
+create or replace function ensure_realtime(tbl regclass)
+returns void language plpgsql as $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = tbl::text
+  ) then
+    execute format('alter publication supabase_realtime add table %s', tbl);
+  end if;
+end $$;
+
 -- ------------------------------------------------------- helper + policies --
 -- true when the signed-in user is a caregiver of the child
 create or replace function is_caregiver(child uuid)
@@ -201,8 +219,11 @@ create policy "caregiver all" on growth  for all
   using (is_caregiver(child_id)) with check (is_caregiver(child_id));
 
 -- realtime: every caregiver's phone sees everyone else's edits instantly
-alter publication supabase_realtime
-  add table feeds, pumps, diapers, sleeps, growth;
+select ensure_realtime('feeds');
+select ensure_realtime('pumps');
+select ensure_realtime('diapers');
+select ensure_realtime('sleeps');
+select ensure_realtime('growth');
 
 -- ---------------------------------------------------------------- provenance --
 -- Where each event came from: logged in-app, or imported from a CSV.
@@ -288,11 +309,15 @@ drop policy if exists "caregivers write settings" on baby_settings;
 create policy "caregivers write settings" on baby_settings
   for all using (is_caregiver(child_id)) with check (is_caregiver(child_id));
 
-alter publication supabase_realtime add table baby_settings;
+select ensure_realtime('baby_settings');
 
--- Explicit, in case this project's ALTER DEFAULT PRIVILEGES (set once while
--- fixing an earlier "permission denied" issue) doesn't cover a table created
--- in a fresh SQL Editor session — cheap insurance against that exact bug.
+-- A GRANT alone doesn't open this table up — PostgREST's anon/authenticated
+-- roles still need a passing row-level security policy (above) to actually
+-- read or write any given row, and that policy is the real gate. This GRANT
+-- is what lets them reach that check at all (a fresh table in Supabase
+-- doesn't always inherit the project's default privileges), so it's
+-- necessary but not sufficient on its own. Same reasoning applies to every
+-- other `grant all ... to anon, authenticated` below.
 grant all on baby_settings to anon, authenticated, service_role;
 
 create or replace function list_caregivers(child uuid)
@@ -324,7 +349,7 @@ drop policy if exists "caregiver all" on daily_remarks;
 create policy "caregiver all" on daily_remarks for all
   using (is_caregiver(child_id)) with check (is_caregiver(child_id));
 
-alter publication supabase_realtime add table daily_remarks;
+select ensure_realtime('daily_remarks');
 grant all on daily_remarks to anon, authenticated, service_role;
 
 -- Same security-definer pattern as list_caregivers: exposes the writer's
@@ -362,15 +387,15 @@ drop policy if exists "caregiver all" on vitamin_d_doses;
 create policy "caregiver all" on vitamin_d_doses for all
   using (is_caregiver(child_id)) with check (is_caregiver(child_id));
 
-alter publication supabase_realtime add table vitamin_d_doses;
+select ensure_realtime('vitamin_d_doses');
 grant all on vitamin_d_doses to anon, authenticated, service_role;
 
 -- ================================================= Part 4: Paracetamol dosing --
 -- One row per dose given (unlike Vitamin D's one-flag-per-day, paracetamol
 -- can be given multiple times a day), so "next dose" can be computed from
--- the most recent row's timestamp plus the configured interval. The app
--- additionally enforces a fixed 4h minimum gap in code regardless of the
--- doses_per_day setting above — see README.
+-- the most recent row's timestamp. The app computes the gap to the next dose
+-- as whichever is LARGER: 24h / doses_per_day (above), or a fixed 4h floor
+-- hardcoded in the app (not stored here, not configurable) — see README.
 create table if not exists paracetamol_doses (
   id uuid primary key default gen_random_uuid(),
   child_id uuid not null references children (id) on delete cascade,
@@ -384,25 +409,31 @@ drop policy if exists "caregiver all" on paracetamol_doses;
 create policy "caregiver all" on paracetamol_doses for all
   using (is_caregiver(child_id)) with check (is_caregiver(child_id));
 
-alter publication supabase_realtime add table paracetamol_doses;
+select ensure_realtime('paracetamol_doses');
 grant all on paracetamol_doses to anon, authenticated, service_role;
 
 -- ======================================== Part 5: duplicate-baby maintenance --
 -- For the rare case where two records exist for one baby (most often: two
 -- caregivers each tapped "create" before inviting each other, so each is
--- only a caregiver of their own record). Moves every row from `from_child`
--- onto `into_child`, carries over any caregiver who'd otherwise lose access,
--- and deletes the now-empty duplicate. Run from the SQL Editor:
+-- only a caregiver of their own record — meaning, at the point this is
+-- needed, usually NEITHER is a caregiver of the other's record yet, so an
+-- is_caregiver()-of-both check would just lock everyone out of their own
+-- fix). Moves every row from `from_child` onto `into_child`, carries over
+-- any caregiver who'd otherwise lose access, and deletes the now-empty
+-- duplicate. This is a database-admin maintenance tool, not an app feature:
+-- it is intentionally NOT reachable through the app's API (see the REVOKE
+-- below, verified by actually calling it as an ordinary database role and
+-- confirming "permission denied" — a plausible-looking auth.uid()-based
+-- check inside the function body was tried first and discarded, since
+-- Supabase's SQL Editor has no JWT/auth.uid() context to check in the first
+-- place; blocking at the grant level sidesteps that entirely). Run it from
+-- the Supabase SQL Editor, which always connects with full privileges:
 --   select merge_duplicate_child('KEEP-uuid', 'DROP-uuid');
--- Requires the caller to be a caregiver of both records.
 create or replace function merge_duplicate_child(into_child uuid, from_child uuid)
 returns void language plpgsql security definer set search_path = public as $$
 begin
   if into_child = from_child then
     raise exception 'into_child and from_child must be different';
-  end if;
-  if not (is_caregiver(into_child) and is_caregiver(from_child)) then
-    raise exception 'must be a caregiver of both records to merge them';
   end if;
 
   -- carry over any caregiver who's on the duplicate but not the kept record
@@ -433,4 +464,45 @@ begin
   delete from children where id = from_child;
 end $$;
 
-grant execute on function merge_duplicate_child(uuid, uuid) to authenticated;
+-- Postgres grants EXECUTE on every new function to PUBLIC by default (unlike
+-- tables), so without this, anon/authenticated could call it via the app's
+-- API despite never being granted it explicitly. Revoking from PUBLIC closes
+-- that; not granting it to anon/authenticated/service_role keeps it closed —
+-- only a role with its own standing privilege (the table owner, effectively
+-- just the Supabase SQL Editor here) can call it.
+revoke all on function merge_duplicate_child(uuid, uuid) from public;
+
+-- ===================================== Part 6: daycare import rate limit --
+-- api/parse-daycare.ts only checks that the caller is *a* caregiver of
+-- *some* child — and any signed-up user can create their own empty one (see
+-- the children insert policy above) — so without this, a stranger could
+-- sign up and call the AI endpoint repeatedly against your Anthropic key.
+-- This caps it per account; api/parse-daycare.ts enforces DAILY_LIMIT
+-- against the count this returns.
+create table if not exists daycare_import_usage (
+  user_id uuid not null,
+  usage_date date not null default (now()::date),
+  count int not null default 0,
+  primary key (user_id, usage_date)
+);
+
+alter table daycare_import_usage enable row level security;
+drop policy if exists "own usage" on daycare_import_usage;
+create policy "own usage" on daycare_import_usage for select
+  using (user_id = auth.uid());
+
+-- Atomic increment-and-return — avoids a check-then-insert race between two
+-- near-simultaneous requests from the same account.
+create or replace function bump_daycare_import_usage()
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  insert into daycare_import_usage (user_id, usage_date, count)
+  values (auth.uid(), now()::date, 1)
+  on conflict (user_id, usage_date) do update
+    set count = daycare_import_usage.count + 1
+  returning count into n;
+  return n;
+end $$;
+
+grant execute on function bump_daycare_import_usage() to authenticated;
