@@ -8,7 +8,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import type { FeedSubstance } from '../lib/types';
 import {
-  LOG_ITEM_LABELS, useBabySettings,
+  LOG_ITEM_LABELS, PARACETAMOL_MIN_GAP_H, useBabySettings,
   type BabySettings, type DashboardVisible, type LogItemKey,
 } from '../lib/settings';
 
@@ -286,13 +286,17 @@ function ParacetamolConfig({ settings, save }: { settings: BabySettings; save: S
     void save({ paracetamol_doses_per_day: n });
   }
 
-  const intervalH = 24 / settings.paracetamol_doses_per_day;
+  const rawIntervalH = 24 / settings.paracetamol_doses_per_day;
+  const intervalH = Math.max(rawIntervalH, PARACETAMOL_MIN_GAP_H);
+  const clamped = rawIntervalH < PARACETAMOL_MIN_GAP_H;
 
   return (
     <div>
       <p className="mb-2 text-xs font-semibold text-slate-500">
         Maximum doses per day — the "Next paracetamol" card uses this to work
-        out the minimum gap between doses and to flag the daily limit
+        out the minimum gap between doses (counted on a rolling 24h window,
+        not a calendar day) and to flag the daily limit. A {PARACETAMOL_MIN_GAP_H}h
+        minimum gap is always enforced, even if this setting implies a shorter one.
       </p>
       <div className="flex items-center gap-2 text-sm">
         <input inputMode="numeric" value={settings.paracetamol_doses_per_day}
@@ -301,7 +305,8 @@ function ParacetamolConfig({ settings, save }: { settings: BabySettings; save: S
         <span className="text-slate-500">times per day</span>
       </div>
       <p className="mt-2 text-xs text-slate-400">
-        That's a dose every {intervalH % 1 === 0 ? intervalH : intervalH.toFixed(1)}h.
+        That's a dose every {intervalH % 1 === 0 ? intervalH : intervalH.toFixed(1)}h
+        {clamped && ` (raised from ${rawIntervalH.toFixed(1)}h to the ${PARACETAMOL_MIN_GAP_H}h minimum)`}.
       </p>
     </div>
   );

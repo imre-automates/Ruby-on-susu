@@ -98,6 +98,10 @@ export const LOG_ITEM_LABELS: Record<LogItemKey, string> = {
 // their visibility toggle in Section 1.
 export const CONFIGURABLE_LOG_ITEMS: LogItemKey[] = ['bottle', 'next_feed', 'paracetamol'];
 
+// Clinical safety floor: always enforced, even if paracetamol_doses_per_day
+// is set high enough that 24h / doses_per_day would otherwise be shorter.
+export const PARACETAMOL_MIN_GAP_H = 4;
+
 interface DbRow {
   child_id: string;
   log_items: LogItemSetting[] | null;
