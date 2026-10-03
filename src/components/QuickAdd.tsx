@@ -98,6 +98,11 @@ export function Chip({ active, onClick, children, color = '#C75B7A' }: {
 const nowLocal = () =>
   new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 
+// Device-LOCAL date — plain toISOString() alone gives the UTC date, which is
+// the wrong calendar day for part of the day in every non-UTC timezone.
+const todayLocal = () =>
+  new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+
 /** "Now" vs an explicit local datetime — value null means "now". */
 function WhenPicker({ value, onChange, label = 'When:' }: {
   value: string | null; onChange: (v: string | null) => void; label?: string;
@@ -282,7 +287,7 @@ function NextFeed({ childId, settings }: ItemProps) {
   );
 }
 
-const todayKey = () => new Date().toISOString().slice(0, 10);
+const todayKey = todayLocal;
 
 /** Shared per-baby daily checkbox — whichever parent ticks it, both see it.
  * "Resets" for free at midnight since it just checks today's date; a poll
@@ -665,7 +670,7 @@ function DaycareImport({ insert }: ItemProps) {
         setParseMsg(`⚠ ${result.error ?? 'Parse failed'}`);
         return;
       }
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayLocal();
       const parsed: DaycareRow[] = ((result.rows ?? []) as ParsedRow[])
         .map((r): DaycareRow | null => (
           r.kind === 'sleep' && r.start && r.end
@@ -830,7 +835,7 @@ interface Remark {
 function DailyRemarks({ childId, insert }: ItemProps) {
   const [remarks, setRemarks] = useState<Remark[] | null>(null);
   const [text, setText] = useState('');
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => todayLocal());
 
   const load = useCallback(async () => {
     const { data, error } = await supabase!.rpc('list_remarks', { child: childId });
@@ -858,7 +863,7 @@ function DailyRemarks({ childId, insert }: ItemProps) {
   return (
     <Card title="📝 Daily remarks" color="#7A6FB3">
       <div className="mb-2">
-        <input type="date" value={date} max={new Date().toISOString().slice(0, 10)}
+        <input type="date" value={date} max={todayLocal()}
           onChange={(e) => setDate(e.target.value)}
           className="rounded-xl border border-slate-200 p-2 text-sm" />
       </div>
@@ -1066,14 +1071,14 @@ function SleepForm({ insert }: ItemProps) {
 
 function GrowthForm({ insert }: ItemProps) {
   const [kg, setKg] = useState('');
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => todayLocal());
   return (
     <Card title="⚖️ Weigh-in" color="#66BB6A">
       <div className="flex flex-wrap items-center gap-2">
         <input inputMode="decimal" placeholder="kg (e.g. 3.42)" value={kg}
           onChange={(e) => setKg(e.target.value)}
           className="w-32 rounded-xl border border-slate-200 p-2.5" />
-        <input type="date" value={date} max={new Date().toISOString().slice(0, 10)}
+        <input type="date" value={date} max={todayLocal()}
           onChange={(e) => setDate(e.target.value)}
           className="rounded-xl border border-slate-200 p-2.5 text-sm" />
         <Chip color="#66BB6A" onClick={() => {
