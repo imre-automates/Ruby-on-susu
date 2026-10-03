@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fmtDuration } from '../lib/format';
 import { supabase } from '../lib/supabase';
-import { useBabySettings, type BabySettings, type LogItemKey } from '../lib/settings';
+import {
+  useBabySettings, PARACETAMOL_MIN_GAP_H, type BabySettings, type LogItemKey,
+} from '../lib/settings';
 import type { BreastSide, FeedSubstance } from '../lib/types';
 
 /** 3am-friendly logging: the common actions are ≤2 taps; every module can
@@ -341,9 +343,33 @@ function VitaminD({ childId }: ItemProps) {
 }
 
 /** Log a single paracetamol dose. Same backdated-time picker as elsewhere —
- * nothing is logged until Save. */
-function Paracetamol({ insert }: ItemProps) {
+ * nothing is logged until Save. Warns (but doesn't block) if the picked
+ * time is less than the clinical minimum gap after the last dose. */
+function Paracetamol({ childId, insert }: ItemProps) {
   const [when, setWhen] = useState<string | null>(null);
+  const [lastDoseTs, setLastDoseTs] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase!.from('paracetamol_doses').select('ts')
+      .eq('child_id', childId).order('ts', { ascending: false }).limit(1);
+    setLastDoseTs(data?.[0]?.ts ?? null);
+  }, [childId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const ch = supabase!
+      .channel(`paracetamol-${childId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'paracetamol_doses', filter: `child_id=eq.${childId}` },
+        () => void load())
+      .subscribe();
+    return () => void supabase!.removeChannel(ch);
+  }, [childId, load]);
+
+  const chosenMs = +new Date(tsFrom(when));
+  const gapMs = lastDoseTs ? chosenMs - +new Date(lastDoseTs) : Infinity;
+  const tooSoon = gapMs < PARACETAMOL_MIN_GAP_H * 3600_000;
 
   function save() {
     insert('paracetamol_doses', { ts: tsFrom(when) }, `paracetamol given${when ? ' (backdated)' : ''}`);
@@ -353,31 +379,39 @@ function Paracetamol({ insert }: ItemProps) {
   return (
     <Card title="🌡️ Paracetamol" color="#8E7CC3">
       <WhenPicker value={when} onChange={setWhen} />
+      {tooSoon && (
+        <p className="mb-2 text-xs font-semibold text-red-500">
+          ⚠ Only {fmtDuration(Math.max(gapMs, 0))} since the last dose — minimum gap is{' '}
+          {PARACETAMOL_MIN_GAP_H}h. Still saves if you tap Save; double-check first.
+        </p>
+      )}
       <Chip color="#8E7CC3" onClick={save}>Save dose</Chip>
     </Card>
   );
 }
 
 /** Countdown to the next allowed dose — 24h / settings.paracetamol_doses_per_day
- * after the last one — plus how many doses have been given since local
- * midnight, against the same configured daily count. */
+ * after the last one, floored at the clinical PARACETAMOL_MIN_GAP_H minimum
+ * so a too-high doses-per-day setting can never shorten it below that — plus
+ * a rolling 24h dose count (not a calendar-day one, so e.g. 23:00 and 01:00
+ * doses both count toward the same limit) against the configured daily max. */
 function NextParacetamol({ childId, settings }: ItemProps) {
   const [lastDoseTs, setLastDoseTs] = useState<string | null>();
-  const [todayCount, setTodayCount] = useState(0);
+  const [last24hCount, setLast24hCount] = useState(0);
   const [, setTick] = useState(0);
   const perDay = settings.paracetamol_doses_per_day;
-  const intervalH = 24 / perDay;
+  const intervalH = Math.max(24 / perDay, PARACETAMOL_MIN_GAP_H);
 
   const load = useCallback(async () => {
-    const start = new Date(); start.setHours(0, 0, 0, 0);
-    const [last, today] = await Promise.all([
+    const since = new Date(Date.now() - 24 * 3600_000);
+    const [last, recent] = await Promise.all([
       supabase!.from('paracetamol_doses').select('ts').eq('child_id', childId)
         .order('ts', { ascending: false }).limit(1),
       supabase!.from('paracetamol_doses').select('id', { count: 'exact', head: true })
-        .eq('child_id', childId).gte('ts', start.toISOString()),
+        .eq('child_id', childId).gte('ts', since.toISOString()),
     ]);
     setLastDoseTs(last.data?.[0]?.ts ?? null);
-    setTodayCount(today.count ?? 0);
+    setLast24hCount(recent.count ?? 0);
   }, [childId]);
 
   useEffect(() => { void load(); }, [load]);
@@ -392,11 +426,12 @@ function NextParacetamol({ childId, settings }: ItemProps) {
     return () => void supabase!.removeChannel(ch);
   }, [childId, load]);
 
-  // tick the countdown forward without re-querying the database
+  // tick the countdown forward (and age the rolling 24h window) without
+  // re-querying the database
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 30000);
+    const id = setInterval(() => { setTick((t) => t + 1); void load(); }, 30000);
     return () => clearInterval(id);
-  }, []);
+  }, [load]);
 
   if (lastDoseTs === undefined) return null; // still loading
 
@@ -408,12 +443,12 @@ function NextParacetamol({ childId, settings }: ItemProps) {
     const nowMs = Date.now();
     status = nowMs < next ? (
       <p className="text-sm text-slate-600">
-        Next dose in{' '}
+        Next safe window in{' '}
         <span className="font-bold">{fmtDuration(next - nowMs)}</span>
         {' '}(at {new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
       </p>
     ) : (
-      <p className="text-sm font-semibold text-emerald-600">Next dose available now</p>
+      <p className="text-sm font-semibold text-emerald-600">Intake allowed</p>
     );
   }
 
@@ -421,8 +456,8 @@ function NextParacetamol({ childId, settings }: ItemProps) {
     <Card title="⏳ Next paracetamol" color="#8E7CC3">
       {status}
       <p className="mt-1 text-xs text-slate-400">
-        {todayCount} of {perDay} doses given today (since midnight)
-        {todayCount >= perDay && (
+        {last24hCount} of {perDay} doses given in the last 24 hours
+        {last24hCount >= perDay && (
           <span className="font-semibold text-red-500"> — daily limit reached</span>
         )}
       </p>
