@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fmtMinutes } from '../lib/format';
 import { supabase } from '../lib/supabase';
-import type { BreastSide, Diaper, Feed, FeedSubstance, Pump, Sleep } from '../lib/types';
+import type {
+  BreastSide, Diaper, Feed, FeedSubstance, ParacetamolDose, Pump, Sleep,
+} from '../lib/types';
 
-type ActivityTable = 'feeds' | 'pumps' | 'diapers' | 'sleeps';
+type ActivityTable = 'feeds' | 'pumps' | 'diapers' | 'sleeps' | 'paracetamol_doses';
 
 interface Item {
   id: string;
@@ -11,7 +13,7 @@ interface Item {
   ts: string;
   label: string;
   emoji: string;
-  raw: Feed | Pump | Diaper | Sleep;
+  raw: Feed | Pump | Diaper | Sleep | ParacetamolDose;
   openSleep?: boolean;
 }
 
@@ -21,6 +23,7 @@ const FILTERS: { table: ActivityTable; label: string; emoji: string }[] = [
   { table: 'pumps', label: 'Pumps', emoji: '🥛' },
   { table: 'diapers', label: 'Diapers', emoji: '💧' },
   { table: 'sleeps', label: 'Sleep', emoji: '😴' },
+  { table: 'paracetamol_doses', label: 'Paracetamol', emoji: '🌡️' },
 ];
 
 // Lookback window; null = full history.
@@ -61,8 +64,9 @@ export default function Timeline({ childId }: { childId: string }) {
       if (since) query = query.gte(tsCol, since);
       return query.order(tsCol, { ascending: false });
     };
-    const [feeds, pumps, diapers, sleeps] = await Promise.all([
+    const [feeds, pumps, diapers, sleeps, paracetamol] = await Promise.all([
       q('feeds', 'ts'), q('pumps', 'ts'), q('diapers', 'ts'), q('sleeps', 'start_ts'),
+      q('paracetamol_doses', 'ts'),
     ]);
     const all: Item[] = [
       ...((feeds.data ?? []) as Feed[]).map((f): Item => ({
@@ -87,6 +91,10 @@ export default function Timeline({ childId }: { childId: string }) {
         label: s.end_ts
           ? `Slept ${fmtMinutes((+new Date(s.end_ts) - +new Date(s.start_ts)) / 60000)}`
           : 'Sleeping… (tap ⏹ to end)',
+      })),
+      ...((paracetamol.data ?? []) as ParacetamolDose[]).map((d): Item => ({
+        id: d.id, table: 'paracetamol_doses', ts: d.ts, raw: d, emoji: '🌡️',
+        label: 'Paracetamol given',
       })),
     ].sort((a, b) => b.ts.localeCompare(a.ts));
     setItems(all);
@@ -204,6 +212,8 @@ function EditForm({ item, onSaved, onCancel }: {
     case 'pumps': return <PumpEdit p={item.raw as Pump} update={update} onCancel={onCancel} />;
     case 'diapers': return <DiaperEdit d={item.raw as Diaper} update={update} onCancel={onCancel} />;
     case 'sleeps': return <SleepEdit s={item.raw as Sleep} update={update} onCancel={onCancel} />;
+    case 'paracetamol_doses':
+      return <ParacetamolEdit d={item.raw as ParacetamolDose} update={update} onCancel={onCancel} />;
   }
 }
 
@@ -304,6 +314,18 @@ function DiaperEdit({ d, update, onCancel }: { d: Diaper; update: Update; onCanc
       <label className="flex items-center gap-1">
         <input type="checkbox" checked={dirty} onChange={(e) => setDirty(e.target.checked)} /> dirty
       </label>
+    </EditShell>
+  );
+}
+
+function ParacetamolEdit({ d, update, onCancel }: {
+  d: ParacetamolDose; update: Update; onCancel: () => void;
+}) {
+  const [when, setWhen] = useState(toLocal(d.ts));
+  return (
+    <EditShell onCancel={onCancel} onSave={() => void update({ ts: toIso(when) })}>
+      <input type="datetime-local" value={when} max={nowLocal()} className={INPUT}
+        onChange={(e) => setWhen(e.target.value)} />
     </EditShell>
   );
 }
