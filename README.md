@@ -1,11 +1,5 @@
 # Baby Tracker
 
-> Forked from [MaxHasan/ai-tracker-app](https://github.com/MaxHasan/ai-tracker-app) —
-> credit to Max for the original two-axis feed model and dashboard. This fork adds
-> a configurable Settings tab, Vitamin D and paracetamol dose tracking, a shared
-> daily-remarks journal, AI-assisted daycare-screenshot import, and a fuller
-> editable Timeline. See [License](#license) for attribution details.
-
 A private, self-hosted baby-tracking web app for two or more caregivers on separate
 phones with realtime sync. Log feeds, pumping, sleep, diapers, medication and
 growth; see a dashboard with intake vs. a weight-scaled target, formula share,
@@ -13,6 +7,8 @@ breast-milk supply, sleep and diaper adequacy.
 
 Installs to the home screen as a progressive web app (PWA), runs free on Supabase +
 Vercel, and every family's data stays in **their own** Supabase project.
+
+<!-- TODO: screenshots — Dashboard, Log tab, Settings tab -->
 
 ## Why it exists
 
@@ -37,22 +33,24 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
   - Bottle and direct breastfeed (with a per-side nursing timer)
   - Pump (L/R), diaper, sleep (including a backdated "asleep now" start with
     no end time yet), and weigh-ins
-  - **Vitamin D** — a shared daily checkbox, resets automatically at midnight
+  - **Vitamin D** — a shared daily checkbox, resets at the device's local midnight
   - **Paracetamol** — logs a timestamped dose, warns if it's given sooner than
-    the clinical 4h minimum gap, and a companion "Next paracetamol" card shows
-    the next safe window and a rolling-24h dose count against your configured
-    daily limit
+    a fixed 4h gap, and a companion "Next paracetamol" card shows the next
+    safe window and a rolling-24h dose count against your configured daily
+    limit (see *Design decisions & known limitations* below)
   - **Daily remarks** — a shared, dated journal both caregivers can write to
   - **Daycare import** — a batch-entry card for a daycare's end-of-day
-    summary; type rows manually, or upload/paste a screenshot of the
-    daycare's own summary and an AI call pre-fills the rows for you to review
-    before saving
+    summary; type rows manually, or upload/paste a screenshot and an AI call
+    pre-fills the rows for you to review before saving (the parsing prompt is
+    tuned to one specific Dutch daycare app's "Dagritme" format out of the
+    box — see setup step 5 to adapt it to yours)
   - All of the above are retroactively loggable
 - **Dashboard**: daily intake by source vs. a weight-scaled target
-  (~150 mL/kg/day), formula % (today / 7-day / all-time), breast-milk supply
-  (direct estimate + pumped L/R), rolling-24h diaper adequacy, sleep (24h and
-  a "last sleep" card), plus charts for intake vs. target, supply, and a
-  sleep-per-day chart with a rolling average line
+  (~150 mL/kg/day, ramped up over the first week — see limitations below),
+  formula % (today / 7-day / all-time), breast-milk supply (direct estimate +
+  pumped L/R), rolling-24h diaper adequacy, sleep (24h and a "last sleep"
+  card), plus charts for intake vs. target, supply, and a sleep-per-day chart
+  with a rolling average line
 - **Timeline**: a filterable (chips reflect what's visible in Settings),
   editable, deletable log of every entry — nothing you log is permanent if
   you made a mistake
@@ -61,8 +59,59 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
 > **Not medical advice.** Estimates (especially direct-breast intake, which
 > can't be measured) are modeled, not measured, and the paracetamol tracker is
 > a reminder/logging tool, not a dosing calculator — always follow your
-> product's label or your pediatrician's guidance for actual dose amounts.
-> Weight checks with your pediatrician remain the source of truth.
+> product's label or your pediatrician's guidance for actual dose amounts and
+> timing. Weight checks with your pediatrician remain the source of truth.
+
+## Security model
+
+- Every data table (feeds, pumps, diapers, sleeps, growth, settings, daily
+  remarks, Vitamin D, paracetamol) is gated by Postgres row-level security on
+  `is_caregiver(child_id)` — a caregiver is anyone explicitly added to a
+  child's `caregivers` row, either automatically (whoever creates the baby
+  record) or via an invite by email from an existing caregiver.
+- Anyone who signs up **can** create their own `children` row — that's by
+  design, so you don't need an admin to onboard a new family — but doing so
+  only makes them a caregiver of *that new, empty record*. RLS means they can
+  never read or write a child they weren't explicitly invited to; there's no
+  "public" or anonymous read path to any family's data.
+- For a genuinely private, invite-only deployment, turn off public sign-ups
+  in Supabase once everyone's created their account (see setup step 1.3).
+- `api/parse-daycare.ts` (the AI import) requires a valid Supabase session
+  JWT and confirms the caller is a caregiver on at least one child before it
+  will call Anthropic — the endpoint is publicly reachable by URL, but an
+  unauthenticated or unrelated caller cannot spend your Anthropic budget
+  through it. It also caps the uploaded image at 5MB and ignores everything
+  in the screenshot except sleep/feed rows. The image is sent to Anthropic's
+  API (model `claude-haiku-4-5-20251001`) for parsing — if you're not
+  comfortable sending a daycare screenshot to a third-party API, skip that
+  setup step and use the manual row-entry form instead, which never leaves
+  your Supabase project.
+
+## Design decisions & known limitations
+
+- **Paracetamol's 4h minimum gap is a fixed constant in the code**
+  (`PARACETAMOL_MIN_GAP_H` in `src/lib/settings.ts`), not configurable
+  through the UI like the daily-dose-count limit is. It's a conservative
+  floor, not sourced medical guidance — actual safe intervals depend on the
+  product and the baby's age/weight, so treat the warning as a reminder to
+  check, not as dosing advice.
+- **The 150 mL/kg/day intake target** is a common rule of thumb for young
+  infants, already ramped from 60→150 mL/kg over the first week
+  (`src/lib/types.ts`) rather than applied flatly from day one, and is
+  overridable per baby in Settings → Dashboard (manual target override) for
+  when it stops fitting as the baby grows.
+- **`schema.sql` is idempotent and safe to re-run** on an existing project —
+  every statement is `IF NOT EXISTS` / `CREATE OR REPLACE` / guarded against
+  already existing, so pulling a fork update that adds a table and re-pasting
+  the whole file picks up only what's missing. There's no formal migration
+  system beyond that — for anything beyond "run the latest schema.sql again",
+  you're working directly in the SQL Editor.
+- **Duplicate baby records**: if this ever happens (see *Notes* below), use
+  the `merge_duplicate_child()` SQL function in `schema.sql` rather than
+  hand-written `UPDATE` statements — it's kept in sync with every table that
+  has a `child_id`, runs as one transaction, and re-attaches any caregiver
+  who was only invited to the record being dropped (otherwise they'd
+  silently lose access to the baby entirely).
 
 ## Tech
 
@@ -81,8 +130,8 @@ You need free **Supabase** and **Vercel** accounts, and Node 20+.
 1. Create a project at supabase.com.
 2. **SQL Editor → New query** → paste all of [`supabase/schema.sql`](supabase/schema.sql) → run.
    This creates every table, row-level security policy, the caregiver model,
-   and realtime — one run sets up the whole app, including Vitamin D,
-   paracetamol, daily remarks, and per-baby settings.
+   and realtime — one run sets up the whole app. It's idempotent, so if you
+   pull a fork update later, re-running the whole file is safe.
 3. **Authentication → Sign In / Providers → Email**: for a private family app,
    turn **off** "Allow new users to sign up" after everyone's created their
    account (invite-only). Optionally disable email confirmation for known users.
@@ -129,7 +178,8 @@ idempotent — re-running on an overlapping export only adds new rows.
 ### 5. Optional — AI daycare screenshot import
 
 The "🏫 Daycare import" card can pre-fill its sleep/feed rows from a photo of
-your daycare app's daily summary, via `api/parse-daycare.ts`. Without this
+your daycare app's daily summary, via `api/parse-daycare.ts` (see *Security
+model* above for what this endpoint does and doesn't expose). Without this
 step the card still works fine as a manual row-entry form — this just adds
 the upload/paste shortcut.
 
@@ -137,8 +187,8 @@ the upload/paste shortcut.
    (a small prepaid minimum) before a key actually works — usage itself is a
    fraction of a cent per screenshot, well under that.
 2. Set a hard monthly spend cap on the key in the Anthropic console — the
-   code caps `max_tokens` and uses the cheapest vision-capable model, but the
-   account-level cap is the real backstop.
+   code caps `max_tokens` and uses the cheapest vision-capable model
+   (`claude-haiku-4-5-20251001`), but the account-level cap is the real backstop.
 3. In Vercel → Settings → Environment Variables, add `ANTHROPIC_API_KEY`
    (server-only — **no** `VITE_` prefix) and redeploy.
 4. The prompt in `api/parse-daycare.ts` is tuned to one specific daycare
@@ -152,39 +202,27 @@ the upload/paste shortcut.
 **Duplicate records.** The app never auto-creates a baby, but if two records
 ever exist for one baby (e.g. two caregivers both tapped "create" before
 inviting each other), logging and viewing can land on different ones and
-data appears to vanish. The app warns you when it sees more than one. To fix:
-pick the record to keep and re-point the others' rows to it in SQL, e.g.
+data appears to vanish. The app warns you when it sees more than one. To fix,
+run this in the SQL Editor (see `merge_duplicate_child()` in
+[`supabase/schema.sql`](supabase/schema.sql) for exactly what it does):
 
 ```sql
--- replace with the id to KEEP and the id to MERGE from
-update feeds              set child_id = 'KEEP' where child_id = 'DROP';
-update pumps               set child_id = 'KEEP' where child_id = 'DROP';
-update diapers             set child_id = 'KEEP' where child_id = 'DROP';
-update sleeps              set child_id = 'KEEP' where child_id = 'DROP';
-update growth              set child_id = 'KEEP' where child_id = 'DROP';
-update paracetamol_doses   set child_id = 'KEEP' where child_id = 'DROP';
-update daily_remarks       set child_id = 'KEEP' where child_id = 'DROP';
--- vitamin_d_doses is keyed on (child_id, dose_date) — drop DROP's rows for
--- any date KEEP already has one, then move the rest
-delete from vitamin_d_doses where child_id = 'DROP'
-  and dose_date in (select dose_date from vitamin_d_doses where child_id = 'KEEP');
-update vitamin_d_doses     set child_id = 'KEEP' where child_id = 'DROP';
--- baby_settings is keyed on child_id alone (one row per baby) — KEEP's row
--- already covers it, so just drop DROP's instead of moving it
-delete from baby_settings where child_id = 'DROP';
-delete from children where id = 'DROP';
+select merge_duplicate_child('KEEP-uuid', 'DROP-uuid');
 ```
 
-## Forking this
+## Credits & forking
+
+Forked from [MaxHasan/ai-tracker-app](https://github.com/MaxHasan/ai-tracker-app)
+— credit to Max for the original two-axis feed model and dashboard. This fork
+adds the Settings tab, Vitamin D and paracetamol dose tracking, the daily
+remarks journal, AI-assisted daycare-screenshot import, and the fully
+editable Timeline.
 
 This is itself a fork, and you're welcome to fork it in turn — it's just a
 self-hosted app with no shared backend, so every fork runs entirely on its
-own free Supabase + Vercel + (optional) Anthropic account. See *Self-host it*
-above for the full setup. If you add something worth sharing back, a PR is
-welcome; if you'd rather just take it in your own direction, that's exactly
-what the MIT license is for.
+own free Supabase + Vercel + (optional) Anthropic account.
 
 ## License
 
 MIT — see [LICENSE](LICENSE). Original work Copyright (c) 2026 Max Hasan;
-later additions in this fork by Imre Scheffers.
+later additions in this fork Copyright (c) 2026 Imre Scheffers.
