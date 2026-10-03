@@ -147,3 +147,30 @@ export function useBabySettings(childId: string) {
       .from('baby_settings').select('*').eq('child_id', childId).maybeSingle();
     setSettings(normalize(childId, data as DbRow | null));
   }, [childId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const ch = supabase!
+      .channel(`baby_settings-${childId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'baby_settings', filter: `child_id=eq.${childId}` },
+        () => void load())
+      .subscribe();
+    return () => void supabase!.removeChannel(ch);
+  }, [childId, load]);
+
+  async function save(patch: Partial<Omit<BabySettings, 'child_id'>>) {
+    const base = settings ?? { child_id: childId, ...DEFAULTS };
+    const next = { ...base, ...patch };
+    setSettings(next); // optimistic — Realtime will reconcile
+    const { error } = await supabase!.from('baby_settings').upsert({ ...next });
+    if (error) alert(`Settings save failed: ${error.message}`);
+  }
+
+  return {
+    settings: settings ?? { child_id: childId, ...DEFAULTS },
+    loading: settings === null,
+    save,
+  };
+}
