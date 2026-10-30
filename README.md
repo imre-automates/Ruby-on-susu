@@ -65,6 +65,13 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
 - **Timeline**: a filterable (chips reflect what's visible in Settings),
   editable, deletable log of every entry — nothing you log is permanent if
   you made a mistake
+- **Push notifications** (optional, requires setup step 6): "you can feed
+  again" when the feed window opens, "no feeding recorded yet" when it
+  closes without one, and a nudge if a sleep timer's been running
+  unusually long. Server-sent (a phone that's closed can't time this
+  itself) via Supabase pg_cron + an Edge Function; each notification type
+  has its own on/off switch in Settings. On iPhone this only works from the
+  home-screen icon (iOS 16.4+), after tapping Allow once.
 - Optional: import history from a previous tracker's CSV export
 
 > **Not medical advice.** Estimates (especially direct-breast intake, which
@@ -117,6 +124,15 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
   for every caller due to a SECURITY DEFINER subtlety, caught only by
   invoking it, not by reading the SQL; revoking the grant outright is both
   simpler and verifiable.)
+- **`send-notifications`** (the cron-driven push sender) runs with the
+  service-role key, by design — it has to read every family's data in one
+  pass to decide who's due a notification, which RLS would otherwise block
+  caregiver-by-caregiver. It's only invoked by `pg_cron`/`pg_net`, which
+  send that key as the function's `Authorization` header; nothing else
+  calls it. **`test-push`** (the Settings "send test notification" button)
+  is the opposite: it runs as the calling user via their own JWT, so RLS
+  naturally limits it to that user's own `push_subscriptions` rows — it
+  can't be used to message someone else's device.
 
 ## Design decisions & known limitations
 
@@ -157,6 +173,17 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
   transaction, and re-attaches any caregiver who was only invited to the
   record being dropped (a hand-written `UPDATE` list wouldn't; that caregiver
   would silently lose access to the baby entirely).
+- **Push notification delivery is tracked per device, not per child.**
+  `notification_log` dedupes on `(subscription_id, kind, source_id)`, not
+  `(child_id, kind, source_id)`. Each phone stores its own IANA timezone
+  (`push_subscriptions.timezone`) because the day-hours/sleep-window gating
+  has to use that phone's local time — the sending Edge Function runs
+  server-side in UTC with no browser-local concept. If delivery were
+  deduped per child instead, the first phone notified for an event would
+  mark it "sent" for the whole child and silently block every other opted-in
+  phone from ever being notified for that same event, which breaks "every
+  opted-in phone gets notified" for any household where that's not
+  instantaneous for every device at once.
 
 ## Tech
 
@@ -264,6 +291,44 @@ the upload/paste shortcut.
    yours.
 5. On the Daycare import card, either tap the upload button or just paste a
    screenshot from your clipboard (Cmd/Ctrl+V) directly into the card.
+
+### 6. Optional — push notifications
+
+"You can feed again," "no feeding recorded yet," and a nudge if a sleep
+timer's been running unusually long — sent server-side via Supabase
+`pg_cron` (checks every minute) + an Edge Function + Web Push, since a
+closed app can't time this itself. Without this step, everything else in
+the app works the same; Settings just won't have a working notifications
+toggle.
+
+1. Generate a VAPID keypair: `npx web-push generate-vapid-keys`.
+2. Add the **public** key as a Vercel env var: `VITE_VAPID_PUBLIC_KEY`
+   (client-exposed by design — that's the point of the public/private
+   split). Add the **private** key as a Supabase **Edge Function secret**
+   named `VAPID_PRIVATE_KEY`, and the public key there too as
+   `VAPID_PUBLIC_KEY` (Dashboard → Edge Functions → Manage secrets) —
+   never as a Vercel env var or anywhere in the repo.
+3. Deploy the two functions: `supabase functions deploy send-notifications`
+   and `supabase functions deploy test-push` (or via the Supabase dashboard).
+   `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are
+   injected automatically by Supabase for every function — you don't set
+   those yourself.
+4. `schema.sql`'s cron schedule reads the project URL and service-role key
+   from Supabase Vault rather than embedding them in the file, so run this
+   once in the SQL Editor first (replace both placeholders — the service
+   role key is on the same API settings page as the anon key from step 1.4):
+   ```sql
+   select vault.create_secret('https://YOUR-PROJECT.supabase.co', 'project_url');
+   select vault.create_secret('YOUR-SERVICE-ROLE-KEY', 'service_role_key');
+   ```
+5. Re-run `supabase/schema.sql` (it's idempotent — see *Design decisions*
+   above) so its cron-scheduling block, which silently no-ops without the
+   Vault secrets from step 4, actually schedules the `send-notifications`
+   job this time.
+6. In the app, open Settings → Notifications → **Enable notifications on
+   this device** on each phone that wants them (iPhone: only works when
+   opened from the home-screen icon, iOS 16.4+ — Add to Home Screen first),
+   then **Send test notification** to confirm delivery before relying on it.
 
 ## Credits & forking
 

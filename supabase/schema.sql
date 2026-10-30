@@ -292,6 +292,19 @@ create table if not exists baby_settings (
   -- decisions & known limitations")
   paracetamol_doses_per_day int not null default 4 check (paracetamol_doses_per_day > 0),
 
+  -- Section 6: push notification config. Per-type on/off switches; the feed
+  -- ones follow the existing feed_min/max_interval_h + day_start/end_hour
+  -- window above rather than duplicating it. Sleep gets its own threshold
+  -- and time-of-day window since "running too long" isn't otherwise bounded.
+  notify_feed_open boolean not null default true,
+  notify_feed_overdue boolean not null default true,
+  notify_sleep_running boolean not null default true,
+  sleep_alert_threshold_h numeric not null default 3 check (sleep_alert_threshold_h > 0),
+  sleep_alert_window_start_hour int not null default 8
+    check (sleep_alert_window_start_hour between 0 and 23),
+  sleep_alert_window_end_hour int not null default 22
+    check (sleep_alert_window_end_hour between 0 and 23),
+
   updated_at timestamptz not null default now()
 );
 
@@ -300,6 +313,21 @@ create table if not exists baby_settings (
 alter table baby_settings
   add column if not exists paracetamol_doses_per_day int not null default 4
   check (paracetamol_doses_per_day > 0);
+alter table baby_settings
+  add column if not exists notify_feed_open boolean not null default true;
+alter table baby_settings
+  add column if not exists notify_feed_overdue boolean not null default true;
+alter table baby_settings
+  add column if not exists notify_sleep_running boolean not null default true;
+alter table baby_settings
+  add column if not exists sleep_alert_threshold_h numeric not null default 3
+  check (sleep_alert_threshold_h > 0);
+alter table baby_settings
+  add column if not exists sleep_alert_window_start_hour int not null default 8
+  check (sleep_alert_window_start_hour between 0 and 23);
+alter table baby_settings
+  add column if not exists sleep_alert_window_end_hour int not null default 22
+  check (sleep_alert_window_end_hour between 0 and 23);
 
 alter table baby_settings enable row level security;
 drop policy if exists "caregivers read settings" on baby_settings;
@@ -506,3 +534,110 @@ begin
 end $$;
 
 grant execute on function bump_daycare_import_usage() to authenticated;
+
+-- ====================================== Part 7: push notifications --
+-- One row per device that opted in, per child (a caregiver of more than one
+-- baby subscribes per baby independently). Stores the device's own IANA
+-- timezone (captured client-side via Intl.DateTimeFormat().resolvedOptions().timeZone)
+-- because the sending Edge Function runs server-side in UTC with no
+-- browser-local concept — "day hours" / "sleep window" gating is evaluated
+-- per-subscription using this timezone, not a single server- or
+-- child-level one, so caregivers in different timezones each get notified
+-- during their own local day hours.
+create table if not exists push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  child_id uuid not null references children (id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  endpoint text not null,
+  p256dh text not null,
+  auth_key text not null,
+  timezone text not null,
+  created_at timestamptz not null default now(),
+  unique (child_id, endpoint)
+);
+
+alter table push_subscriptions enable row level security;
+drop policy if exists "own subscriptions" on push_subscriptions;
+create policy "own subscriptions" on push_subscriptions for all
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid() and is_caregiver(child_id));
+
+-- service_role (the Edge Function) needs to read every subscription across
+-- every family to decide who to notify; anon/authenticated stay RLS-scoped
+-- to their own rows via the policy above.
+grant all on push_subscriptions to authenticated, service_role;
+
+-- Exactly-once delivery tracking, PER SUBSCRIPTION (not per child): if this
+-- were keyed by child+kind+source_id alone, the first phone notified for an
+-- event would mark it "sent" for the whole child, silently preventing any
+-- other opted-in phone from ever being notified for that same event — which
+-- would break "every opted-in phone gets notified" from a multi-caregiver
+-- household. Keying by subscription lets each device's delivery (and its
+-- own timezone gating) be independent, while still guaranteeing each
+-- device sees a given event exactly once.
+create table if not exists notification_log (
+  id uuid primary key default gen_random_uuid(),
+  subscription_id uuid not null references push_subscriptions (id) on delete cascade,
+  kind text not null check (kind in ('feed_open', 'feed_overdue', 'sleep_running')),
+  source_id uuid not null,
+  sent_at timestamptz not null default now(),
+  unique (subscription_id, kind, source_id)
+);
+
+alter table notification_log enable row level security;
+drop policy if exists "caregivers read" on notification_log;
+create policy "caregivers read" on notification_log for select
+  using (exists (
+    select 1 from push_subscriptions s
+    where s.id = notification_log.subscription_id and is_caregiver(s.child_id)
+  ));
+
+-- Only service_role (the Edge Function, which bypasses RLS) writes here —
+-- no insert/update/delete policy is granted to anon/authenticated.
+grant select on notification_log to authenticated;
+grant all on notification_log to service_role;
+
+-- pg_cron calls the send-notifications Edge Function every minute via
+-- pg_net (fire-and-forget async HTTP — pg_cron doesn't wait for or care
+-- about the response). The service-role key is read from Vault at schedule
+-- time via a DO block rather than hardcoded, so it's never stored in this
+-- file's text or in cron.job in plaintext; see README for the one-time
+-- Vault setup step this depends on.
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+do $$
+declare
+  project_url text;
+  service_key text;
+begin
+  select decrypted_secret into project_url from vault.decrypted_secrets
+    where name = 'project_url';
+  select decrypted_secret into service_key from vault.decrypted_secrets
+    where name = 'service_role_key';
+
+  if project_url is null or service_key is null then
+    raise notice 'Skipping send-notifications cron schedule: run the Vault setup in README (vault secrets "project_url" and "service_role_key") first, then re-run this file.';
+    return;
+  end if;
+
+  if exists (select 1 from cron.job where jobname = 'send-notifications') then
+    perform cron.unschedule('send-notifications');
+  end if;
+
+  perform cron.schedule(
+    'send-notifications',
+    '* * * * *',
+    format(
+      $job$
+      select net.http_post(
+        url := %L,
+        headers := jsonb_build_object('Authorization', 'Bearer ' || %L, 'Content-Type', 'application/json'),
+        body := '{}'::jsonb
+      );
+      $job$,
+      project_url || '/functions/v1/send-notifications',
+      service_key
+    )
+  );
+end $$;
