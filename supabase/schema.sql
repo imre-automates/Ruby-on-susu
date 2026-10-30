@@ -581,8 +581,16 @@ create table if not exists notification_log (
   kind text not null check (kind in ('feed_open', 'feed_overdue', 'sleep_running')),
   source_id uuid not null,
   sent_at timestamptz not null default now(),
+  -- set when the notification's action button (if it had one — see
+  -- notification-action Edge Function) was used; also the single-use guard
+  -- against the same capability token (this row's id) being replayed.
+  acted_at timestamptz,
   unique (subscription_id, kind, source_id)
 );
+
+-- in case this column was added to an existing notification_log table by an
+-- earlier version of this file
+alter table notification_log add column if not exists acted_at timestamptz;
 
 alter table notification_log enable row level security;
 drop policy if exists "caregivers read" on notification_log;

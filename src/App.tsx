@@ -9,6 +9,11 @@ import { isConfigured, supabase } from './lib/supabase';
 import type { Child } from './lib/types';
 
 type Tab = 'log' | 'timeline' | 'dashboard' | 'settings';
+const TABS: Tab[] = ['log', 'timeline', 'dashboard', 'settings'];
+
+function isTab(v: string | null): v is Tab {
+  return !!v && (TABS as string[]).includes(v);
+}
 
 // Rename this to whatever you like — shown on the sign-in screen and title.
 const APP_NAME = 'Baby Tracker';
@@ -93,8 +98,26 @@ function Main({ onSignOut }: { onSignOut: () => void }) {
   const [dupCount, setDupCount] = useState(0);
   const [noChild, setNoChild] = useState(false);
   const [setup, setSetup] = useState({ name: '', dob: '', kg: '' });
-  const [tab, setTab] = useState<Tab>('log');
+  const [tab, setTab] = useState<Tab>(() => {
+    const fromUrl = new URLSearchParams(location.search).get('tab');
+    return isTab(fromUrl) ? fromUrl : 'log';
+  });
   const [err, setErr] = useState('');
+
+  // A notification's action button is handled entirely by the service
+  // worker + notification-action (no app code involved), but tapping the
+  // notification BODY focuses this already-open tab rather than reloading
+  // it — so it can't just read the URL's ?tab= again. The service worker
+  // posts the intended tab instead; this is a single-page app with no
+  // other use for navigator.serviceWorker messages, so no type-filtering
+  // beyond the one shape it sends.
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      if (e.data?.type === 'navigate' && isTab(e.data.tab)) setTab(e.data.tab);
+    }
+    navigator.serviceWorker?.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker?.removeEventListener('message', onMessage);
+  }, []);
 
   // Never auto-create: an account that simply hasn't been invited yet must not
   // silently spawn a duplicate baby record. Fetch ALL visible children so we

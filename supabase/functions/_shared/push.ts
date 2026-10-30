@@ -22,6 +22,14 @@ export interface PushSubscriptionRow {
   auth_key: string;
 }
 
+export interface PushPayload {
+  title: string;
+  body: string;
+  tag?: string;
+  data?: Record<string, unknown>;
+  actions?: { action: string; title: string }[];
+}
+
 /** True if the push service says this subscription is permanently dead
  * (unsubscribed, expired, or the endpoint no longer exists) — the caller
  * should delete the row so it stops being tried every minute. */
@@ -30,10 +38,7 @@ export function isDeadSubscription(err: unknown): boolean {
   return statusCode === 404 || statusCode === 410;
 }
 
-export async function sendPush(
-  sub: PushSubscriptionRow,
-  payload: { title: string; body: string },
-): Promise<void> {
+export async function sendPush(sub: PushSubscriptionRow, payload: PushPayload): Promise<void> {
   await webpush.sendNotification(
     {
       endpoint: sub.endpoint,

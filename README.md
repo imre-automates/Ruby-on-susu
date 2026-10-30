@@ -70,8 +70,14 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
   closes without one, and a nudge if a sleep timer's been running
   unusually long. Server-sent (a phone that's closed can't time this
   itself) via Supabase pg_cron + an Edge Function; each notification type
-  has its own on/off switch in Settings. On iPhone this only works from the
-  home-screen icon (iOS 16.4+), after tapping Allow once.
+  has its own on/off switch in Settings. Feed alerts have a "Log [preset
+  bottle]" action button, sleep alerts have "Log wake-up" / "Still asleep"
+  — these act directly from the notification without opening the app
+  (Android/desktop Chrome; **action buttons on web push aren't reliably
+  supported on iOS Safari as of this writing** — tapping the notification
+  body to open the app always works there, the buttons may just not render;
+  confirm with a real test rather than trusting this note). On iPhone this
+  only works from the home-screen icon (iOS 16.4+), after tapping Allow once.
 - Optional: import history from a previous tracker's CSV export
 
 > **Not medical advice.** Estimates (especially direct-breast intake, which
@@ -133,6 +139,20 @@ share, supply vs. demand, direct-vs-bottle balance) meaningful.
   is the opposite: it runs as the calling user via their own JWT, so RLS
   naturally limits it to that user's own `push_subscriptions` rows — it
   can't be used to message someone else's device.
+- **`notification-action`** (handles a notification's action buttons — "Log
+  wake-up," "Log [preset bottle]") has `verify_jwt` turned **off**, and is
+  the one place in this app that isn't gated by a Supabase JWT at all. This
+  is deliberate, not an oversight: it's called from the service worker's
+  `notificationclick` handler, which has no access to the page's session
+  (service workers can't read `localStorage`, where Supabase persists it)
+  and so has no JWT to present. Instead each push payload carries a
+  single-use capability token — the `notification_log` row's own id, which
+  only exists because `send-notifications` already created it for that
+  exact device+event, is practically unguessable, and is checked against
+  `notification_log.acted_at` to refuse a second use. Knowing a valid,
+  not-yet-used token lets you perform exactly the one action that
+  notification offered (end one specific sleep, or log one feed for one
+  specific child) — nothing broader.
 
 ## Design decisions & known limitations
 
@@ -308,8 +328,12 @@ toggle.
    named `VAPID_PRIVATE_KEY`, and the public key there too as
    `VAPID_PUBLIC_KEY` (Dashboard → Edge Functions → Manage secrets) —
    never as a Vercel env var or anywhere in the repo.
-3. Deploy the two functions: `supabase functions deploy send-notifications`
-   and `supabase functions deploy test-push` (or via the Supabase dashboard).
+3. Deploy the three functions: `supabase functions deploy send-notifications`,
+   `supabase functions deploy test-push`, and
+   `supabase functions deploy notification-action --no-verify-jwt` (the
+   `--no-verify-jwt` is required — see *Security model* above for why) —
+   or via the Supabase dashboard, setting `notification-action`'s "Enforce
+   JWT Verification" to off there if you deploy it that way instead.
    `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are
    injected automatically by Supabase for every function — you don't set
    those yourself.
