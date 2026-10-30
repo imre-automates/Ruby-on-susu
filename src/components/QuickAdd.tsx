@@ -142,11 +142,12 @@ function tsFrom(when: string | null, offsetMs = 0): string {
   return when ? new Date(when).toISOString() : new Date(Date.now() - offsetMs).toISOString();
 }
 
-function Bottle({ insert, settings }: ItemProps) {
+function Bottle({ insert, childId, settings }: ItemProps) {
   const [substance, setSubstance] = useState<FeedSubstance>(settings.bottle_default_substance);
   const [when, setWhen] = useState<string | null>(nowLocal());
   const [ml, setMl] = useState<number | null>(null);
   const [custom, setCustom] = useState('');
+  const [leftoverOpen, setLeftoverOpen] = useState(false);
   const color = substance === 'formula' ? '#E8973A' : '#2E86AB';
   const amount = ml ?? Number(custom) ?? 0;
 
@@ -180,7 +181,88 @@ function Bottle({ insert, settings }: ItemProps) {
           className="w-24 rounded-xl border border-slate-200 p-2.5 text-center text-sm" />
         <Chip color={color} onClick={save}>Save{amount ? ` ${amount} mL` : ''}</Chip>
       </div>
+      <div className="mt-2 border-t border-slate-100 pt-2">
+        <button onClick={() => setLeftoverOpen(true)}
+          className="text-xs font-semibold text-slate-400 underline">
+          Bottle not finished — adjust the amount…
+        </button>
+      </div>
+      {leftoverOpen && <LeftoverModal childId={childId} onClose={() => setLeftoverOpen(false)} />}
     </Card>
+  );
+}
+
+/** For a bottle made ahead of feeding, where the baby didn't finish it —
+ * pulls up the most recently logged bottle so its volume_ml can be reduced
+ * down to what was actually drunk (made minus however much is left), since
+ * every intake KPI reads volume_ml as "amount consumed," not "amount made." */
+function LeftoverModal({ childId, onClose }: { childId: string; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [feed, setFeed] = useState<{ id: string; volume_ml: number | null; ts: string } | null>(null);
+  const [leftover, setLeftover] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      const { data } = await supabase!.from('feeds').select('id, volume_ml, ts')
+        .eq('child_id', childId).eq('delivery', 'bottle')
+        .order('ts', { ascending: false }).limit(1).maybeSingle();
+      setFeed(data);
+      setLoading(false);
+    })();
+  }, [childId]);
+
+  async function submit() {
+    if (!feed) return;
+    const made = feed.volume_ml ?? 0;
+    const n = Number(leftover);
+    if (!Number.isFinite(n) || n < 0) return setErr('Enter a number of mL left (0 or more).');
+    if (n > made) return setErr(`Can't be more than the ${made} mL made.`);
+    setBusy(true);
+    const consumed = Math.round(made - n);
+    const { error } = await supabase!.from('feeds')
+      .update({ volume_ml: consumed, note: `${made} mL made, ${leftover} mL left` })
+      .eq('id', feed.id);
+    setBusy(false);
+    if (error) return setErr(error.message);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/30 p-4 sm:items-center"
+      onClick={onClose}>
+      <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <h3 className="mb-3 text-sm font-bold text-slate-700">Bottle not finished</h3>
+        {loading ? (
+          <p className="text-sm text-slate-400">Loading…</p>
+        ) : !feed ? (
+          <p className="text-sm text-slate-400">No recent bottle feed found.</p>
+        ) : (
+          <>
+            <p className="mb-3 text-xs text-slate-500">
+              Last bottle: {feed.volume_ml ?? '?'} mL at{' '}
+              {new Date(feed.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.
+              How much is left?
+            </p>
+            <input inputMode="numeric" placeholder="mL left" value={leftover} autoFocus
+              onChange={(e) => { setLeftover(e.target.value); setErr(''); }}
+              className="w-full rounded-xl border border-slate-200 p-3 text-center text-lg" />
+            {err && <p className="mt-2 text-xs font-semibold text-red-500">{err}</p>}
+          </>
+        )}
+        <div className="mt-4 flex gap-2">
+          <button onClick={onClose}
+            className="flex-1 rounded-xl border border-slate-200 py-2.5 text-sm font-semibold text-slate-500">
+            Cancel
+          </button>
+          <button onClick={() => void submit()} disabled={!feed || busy}
+            className="flex-1 rounded-xl bg-direct py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+            Submit
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
