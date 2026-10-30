@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent,
 } from '@dnd-kit/core';
@@ -11,6 +11,7 @@ import {
   LOG_ITEM_LABELS, PARACETAMOL_MIN_GAP_H, useBabySettings,
   type BabySettings, type DashboardVisible, type LogItemKey,
 } from '../lib/settings';
+import { isSubscribed, pushSupported, sendTestPush, subscribeToPush, unsubscribeFromPush } from '../lib/push';
 
 const INPUT = 'rounded-xl border border-slate-200 p-2.5 text-sm';
 
@@ -21,6 +22,7 @@ export default function Settings({ childId }: { childId: string }) {
   // reach for most), the rest collapsed.
   const [open, setOpen] = useState({
     order: true, bottle: false, nextFeed: false, paracetamol: false, dashboard: false,
+    notifications: false,
   });
 
   if (loading) return <p className="pt-8 text-center text-slate-400">Loading…</p>;
@@ -62,6 +64,11 @@ export default function Settings({ childId }: { childId: string }) {
       <Collapsible title="Dashboard" open={open.dashboard}
         onToggle={() => setOpen((o) => ({ ...o, dashboard: !o.dashboard }))}>
         <DashboardConfig settings={settings} save={save} />
+      </Collapsible>
+
+      <Collapsible title="Notifications" open={open.notifications}
+        onToggle={() => setOpen((o) => ({ ...o, notifications: !o.notifications }))}>
+        <NotificationsConfig childId={childId} settings={settings} save={save} />
       </Collapsible>
     </div>
   );
@@ -368,5 +375,150 @@ function DashboardConfig({ settings, save }: { settings: BabySettings; save: Sav
         </li>
       ))}
     </ul>
+  );
+}
+
+// ---------------------------------------------- Section: notifications --
+
+function NotificationsConfig({ childId, settings, save }: { childId: string; settings: BabySettings; save: Save }) {
+  const [status, setStatus] = useState<'checking' | 'unsupported' | 'off' | 'on'>('checking');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    if (!pushSupported()) { setStatus('unsupported'); return; }
+    void isSubscribed().then((v) => setStatus(v ? 'on' : 'off'));
+  }, []);
+
+  async function enable() {
+    setBusy(true);
+    setMsg('');
+    try {
+      await subscribeToPush(childId);
+      setStatus('on');
+      setMsg('✓ Notifications enabled on this device.');
+    } catch (err) {
+      setMsg(`⚠ ${err instanceof Error ? err.message : 'Failed to enable notifications'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable() {
+    setBusy(true);
+    setMsg('');
+    try {
+      await unsubscribeFromPush();
+      setStatus('off');
+      setMsg('Notifications disabled on this device.');
+    } catch (err) {
+      setMsg(`⚠ ${err instanceof Error ? err.message : 'Failed to disable notifications'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function test() {
+    setBusy(true);
+    setMsg('');
+    try {
+      const { sent, total } = await sendTestPush();
+      setMsg(sent > 0
+        ? `✓ Test sent to ${sent} of ${total} device${total === 1 ? '' : 's'} on this account — check for it.`
+        : '⚠ No test notification could be sent — is this device enabled above?');
+    } catch (err) {
+      setMsg(`⚠ ${err instanceof Error ? err.message : 'Test notification failed'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function setWindow(startHour: number, endHour: number) {
+    if (startHour >= endHour) return;
+    void save({ sleep_alert_window_start_hour: startHour, sleep_alert_window_end_hour: endHour });
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <p className="mb-2 text-xs font-semibold text-slate-500">
+          This device (push notifications only work once this app's deployed
+          and opened from the home-screen icon — Add to Home Screen first,
+          especially on iPhone, iOS 16.4+)
+        </p>
+        {status === 'unsupported' && (
+          <p className="text-sm text-slate-400">Not supported on this browser/device.</p>
+        )}
+        {status === 'checking' && <p className="text-sm text-slate-400">Checking…</p>}
+        {status === 'off' && (
+          <button onClick={() => void enable()} disabled={busy}
+            className="rounded-xl bg-direct px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+            Enable notifications on this device
+          </button>
+        )}
+        {status === 'on' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-xl border border-direct bg-direct px-3 py-1.5 text-xs font-semibold text-white">
+              Enabled on this device
+            </span>
+            <button onClick={() => void test()} disabled={busy}
+              className="rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 disabled:opacity-50">
+              Send test notification
+            </button>
+            <button onClick={() => void disable()} disabled={busy}
+              className="text-xs text-slate-400 underline disabled:opacity-50">
+              disable
+            </button>
+          </div>
+        )}
+        {msg && <p className="mt-2 text-xs text-slate-500">{msg}</p>}
+      </div>
+
+      <div className="space-y-1.5 border-t border-slate-100 pt-4">
+        <p className="mb-2 text-xs font-semibold text-slate-500">
+          What to notify about — each follows the window/threshold it's
+          paired with below, on every device enabled above
+        </p>
+        <div className="flex items-center gap-2 rounded-xl border border-slate-100 p-3">
+          <span className="flex-1 min-w-0 text-sm font-medium text-slate-600">Feed window opens</span>
+          <Toggle on={settings.notify_feed_open} onChange={(v) => void save({ notify_feed_open: v })} />
+        </div>
+        <div className="flex items-center gap-2 rounded-xl border border-slate-100 p-3">
+          <span className="flex-1 min-w-0 text-sm font-medium text-slate-600">Feed window closes with nothing logged</span>
+          <Toggle on={settings.notify_feed_overdue} onChange={(v) => void save({ notify_feed_overdue: v })} />
+        </div>
+        <div className="flex items-center gap-2 rounded-xl border border-slate-100 p-3">
+          <span className="flex-1 min-w-0 text-sm font-medium text-slate-600">Sleep timer running long</span>
+          <Toggle on={settings.notify_sleep_running} onChange={(v) => void save({ notify_sleep_running: v })} />
+        </div>
+        <p className="pt-1 text-xs text-slate-400">
+          The two feed alerts follow the Next-feed card's own window and day
+          hours (configured above in "Next-feed card config") and only fire
+          during those hours.
+        </p>
+      </div>
+
+      <div className="border-t border-slate-100 pt-4">
+        <p className="mb-2 text-xs font-semibold text-slate-500">
+          Sleep timer alert — how long is "running long", and during which hours
+        </p>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <input inputMode="decimal" value={settings.sleep_alert_threshold_h}
+            onChange={(e) => void save({ sleep_alert_threshold_h: Number(e.target.value) || 0 })}
+            className={`${INPUT} w-16 text-center`} />
+          <span className="text-slate-500">hours, between</span>
+          <HourSelect value={settings.sleep_alert_window_start_hour}
+            onChange={(h) => setWindow(h, settings.sleep_alert_window_end_hour)} />
+          <span className="text-slate-500">and</span>
+          <HourSelect value={settings.sleep_alert_window_end_hour}
+            onChange={(h) => setWindow(settings.sleep_alert_window_start_hour, h)} />
+        </div>
+        <p className="mt-2 text-xs text-slate-400">
+          A timer still running from the night before gets this once, the
+          moment the window opens — it isn't lost just because it started
+          outside these hours.
+        </p>
+      </div>
+    </div>
   );
 }

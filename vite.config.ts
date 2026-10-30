@@ -12,7 +12,10 @@ export default defineConfig({
       // Activate a new build immediately instead of waiting for every tab to
       // close — otherwise the installed PWA keeps serving a stale bundle for
       // a long time (this is what made earlier fixes appear not to "take").
-      workbox: { clientsClaim: true, skipWaiting: true },
+      // Push notification handling lives in public/push-sw.js, loaded into
+      // the generated service worker via importScripts rather than
+      // switching the whole build to injectManifest mode for two listeners.
+      workbox: { clientsClaim: true, skipWaiting: true, importScripts: ['push-sw.js'] },
       manifest: {
         name: 'Baby Tracker',
         short_name: 'Baby',

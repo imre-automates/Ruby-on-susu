@@ -35,6 +35,12 @@ export interface BabySettings {
   dashboard_visible: DashboardVisible;
   target_intake_ml_override: number | null;
   paracetamol_doses_per_day: number;
+  notify_feed_open: boolean;
+  notify_feed_overdue: boolean;
+  notify_sleep_running: boolean;
+  sleep_alert_threshold_h: number;
+  sleep_alert_window_start_hour: number;
+  sleep_alert_window_end_hour: number;
 }
 
 // A fresh fork that never opens Settings must behave exactly like the app
@@ -76,6 +82,12 @@ const DEFAULTS: Omit<BabySettings, 'child_id'> = {
   target_intake_ml_override: null,
   // A common pediatric default (max 4x/24h, ~every 6h) — tune per baby in Settings.
   paracetamol_doses_per_day: 4,
+  notify_feed_open: true,
+  notify_feed_overdue: true,
+  notify_sleep_running: true,
+  sleep_alert_threshold_h: 3,
+  sleep_alert_window_start_hour: 8,
+  sleep_alert_window_end_hour: 22,
 };
 
 export const LOG_ITEM_LABELS: Record<LogItemKey, string> = {
@@ -114,6 +126,12 @@ interface DbRow {
   dashboard_visible: Partial<DashboardVisible> | null;
   target_intake_ml_override: number | null;
   paracetamol_doses_per_day: number | null;
+  notify_feed_open: boolean | null;
+  notify_feed_overdue: boolean | null;
+  notify_sleep_running: boolean | null;
+  sleep_alert_threshold_h: number | null;
+  sleep_alert_window_start_hour: number | null;
+  sleep_alert_window_end_hour: number | null;
 }
 
 /** DB row (possibly missing fields from an older client) merged over defaults. */
@@ -139,6 +157,12 @@ function normalize(childId: string, row: DbRow | null): BabySettings {
     dashboard_visible: { ...DEFAULTS.dashboard_visible, ...(row.dashboard_visible ?? {}) },
     target_intake_ml_override: row.target_intake_ml_override ?? null,
     paracetamol_doses_per_day: row.paracetamol_doses_per_day ?? DEFAULTS.paracetamol_doses_per_day,
+    notify_feed_open: row.notify_feed_open ?? DEFAULTS.notify_feed_open,
+    notify_feed_overdue: row.notify_feed_overdue ?? DEFAULTS.notify_feed_overdue,
+    notify_sleep_running: row.notify_sleep_running ?? DEFAULTS.notify_sleep_running,
+    sleep_alert_threshold_h: row.sleep_alert_threshold_h ?? DEFAULTS.sleep_alert_threshold_h,
+    sleep_alert_window_start_hour: row.sleep_alert_window_start_hour ?? DEFAULTS.sleep_alert_window_start_hour,
+    sleep_alert_window_end_hour: row.sleep_alert_window_end_hour ?? DEFAULTS.sleep_alert_window_end_hour,
   };
 }
 
